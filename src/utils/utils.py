@@ -1,4 +1,5 @@
 import re
+import math
 
 def dms_to_decimal(dms_str):
     """
@@ -29,3 +30,16 @@ def dms_to_decimal(dms_str):
         decimal *= -1
         
     return decimal
+
+def create_bounding_box(center_lat, center_lon, area_ha):
+    """Calculates a square bounding box around decimal coordinates."""
+    # Convert hectares to square meters
+    side_m = math.sqrt(area_ha * 10000)
+    dist_m = side_m / 2
+    
+    # Earth conversions
+    delta_lat = dist_m / 111320.0
+    delta_lon = dist_m / (111320.0 * math.cos(math.radians(center_lat)))
+    
+    return [center_lon - delta_lon, center_lat - delta_lat, 
+            center_lon + delta_lon, center_lat + delta_lat]
