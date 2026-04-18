@@ -2,7 +2,7 @@ from pathlib import Path
 from components.upscaling import ldsr2
 from components.segmentation import samgeo_sam2
 
-def segment_plot(src_tif: Path, dst_dir: Path, ndvi_threshold: float = 0.15):
+def segment_plot_(src_tif: Path, dst_dir: Path, ndvi_threshold: float = 0.15):
     dst_dir.mkdir(parents=True, exist_ok=True)
     SAM2_PREP_TIF_NIR_PATH = Path.joinpath(dst_dir, "sam2_prep_nir.tif").resolve()
     SAM2_PREP_TIF_NDVI_PATH = Path.joinpath(dst_dir, "sam2_prep_ndvi.tif").resolve()
@@ -25,3 +25,4 @@ def segment_plot(src_tif: Path, dst_dir: Path, ndvi_threshold: float = 0.15):
 
     samgeo_sam2.run_sam2_automatic(SAM2_PREP_TIF_NDVI_PATH, SAM2_MASK_TIF_PATH, SAM2_VECTOR_GJSON_PATH)
     samgeo_sam2.filter_farm_plots(SAM2_VECTOR_GJSON_PATH, src_tif, ndvi, profile, FILTERED_GPKG_PATH, NDVI_THRESHOLD)
+
