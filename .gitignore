@@ -12,4 +12,9 @@ wheels/
 .env
 
 outputs
+secrets
 realesrgan
+dataset
+DSen2
+segmented_output
+gee_output
