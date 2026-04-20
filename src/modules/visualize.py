@@ -1,240 +1,402 @@
-# module_visualize.py
-
+from pathlib import Path
 import numpy as np
 import rasterio
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.colors import to_rgba
-from pathlib import Path
 from rasterio.plot import reshape_as_image
 
 
-def load_rgb_preview(sr_tif_path: Path, p_low: float = 2.0, p_high: float = 98.0) -> np.ndarray:
-    """
-    Load SR GeoTIFF and return a stretched uint8 RGB (H, W, 3).
-    Uses true color [Red, Green, Blue] = [Band1, Band2, Band3].
-    """
-    with rasterio.open(sr_tif_path) as src:
-        # Read only the first 3 bands (R, G, B) — skip NIR for true color display
-        rgb = src.read([1, 2, 3]).astype(np.float32)   # (3, H, W)
+def load_rgb_uint8(tif_path: Path, p_low: float = 2.0, p_high: float = 98.0) -> tuple[np.ndarray, dict]:
+    """Load first 3 bands of a GeoTIFF as a display-ready uint8 (H,W,3)."""
+    with rasterio.open(tif_path) as src:
+        n_bands = min(3, src.count)
+        rgb_chw = np.stack(
+            [src.read(i + 1).astype(np.float32) for i in range(n_bands)],
+            axis=0,
+        )
+        profile = src.profile
+        bounds  = src.bounds
 
-    rgb_hwc = reshape_as_image(rgb)                     # (H, W, 3)
-    out = np.zeros_like(rgb_hwc, dtype=np.float32)
-    for i in range(3):
+    rgb_hwc = reshape_as_image(rgb_chw)
+    out     = np.zeros_like(rgb_hwc, dtype=np.float32)
+    for i in range(rgb_hwc.shape[2]):
         lo = np.percentile(rgb_hwc[..., i], p_low)
         hi = np.percentile(rgb_hwc[..., i], p_high)
-        out[..., i] = np.clip((rgb_hwc[..., i] - lo) / (hi - lo + 1e-8), 0.0, 1.0)
+        out[..., i] = np.clip((rgb_hwc[..., i] - lo) / (hi - lo + 1e-8), 0, 1)
 
-    return (out * 255).astype(np.uint8)
-
-
-def rasterize_vector_masks(
-    vector_path: Path,
-    reference_tif: Path,
-) -> tuple[np.ndarray, gpd.GeoDataFrame]:
-    """
-    Burn vector polygons into a raster aligned to reference_tif.
-    Each polygon gets a unique integer ID.
-    Returns:
-        label_raster : (H, W) int32 — 0 = no segment, 1..N = segment IDs
-        gdf          : the GeoDataFrame (reprojected to raster CRS)
-    """
-    from rasterio.features import rasterize as rio_rasterize
-    from rasterio.transform import from_bounds
-
-    with rasterio.open(reference_tif) as src:
-        out_shape = (src.height, src.width)
-        transform = src.transform
-        crs = src.crs
-
-    gdf = gpd.read_file(vector_path).to_crs(crs)
-
-    # Pair each geometry with a unique int ID starting from 1
-    shapes = [
-        (geom, idx + 1)
-        for idx, geom in enumerate(gdf.geometry)
-        if geom is not None and geom.is_valid
-    ]
-
-    label_raster = rio_rasterize(
-        shapes,
-        out_shape=out_shape,
-        transform=transform,
-        fill=0,
-        dtype=np.int32,
-    )
-    return label_raster, gdf
+    return (out * 255).astype(np.uint8), profile, bounds
 
 
-def overlay_masks_on_image(
-    sr_tif_path: Path,
-    vector_path: Path,           # GeoJSON or GPKG from SAM2 / filter step
-    output_png_path: Path,
-    alpha: float = 0.35,         # mask fill opacity — 0=invisible, 1=opaque
-    edge_color: str = "yellow",  # polygon outline color
-    edge_width: float = 0.6,
-    figsize: tuple = (14, 14),
+def overlay_segments_on_orthophoto(
+    orthophoto_path: Path,
+    segments_geojson: Path,      # full polygon masks from SAM3
+    output_png: Path,
+    alpha_fill: float = 0.25,
+    edge_color: str = "cyan",
+    edge_width: float = 0.8,
+    figsize: tuple = (16, 16),
     dpi: int = 150,
-    title: str = "SAM2 segmentation overlay",
-    max_segments_legend: int = 0,  # 0 = don't show legend (too many segments)
+    title: str = "Farm plot segmentation",
 ) -> None:
-    """
-    Overlay SAM2 segment polygons on the true-color SR image and save as PNG.
+    """Overlay full segment polygons on the orthophoto."""
+    output_png.parent.mkdir(parents=True, exist_ok=True)
 
-    Strategy:
-    - True color background from SR bands 1/2/3 (R/G/B)
-    - Each segment filled with a distinct random color at low opacity
-    - Polygon outlines drawn on top in a high-contrast color
-    - Works with both the raw SAM2 output (all segments) and the filtered
-    farm plot output — just pass whichever vector you want to preview
-
-    alpha=0.35 is a good default:
-    high enough to see the segments, low enough to see the image beneath.
-    Raise to 0.5 if segments are hard to see, lower to 0.2 for subtle overlay.
-    """
-    output_png_path.parent.mkdir(parents=True, exist_ok=True)
-
-    print(f"Loading SR image: {sr_tif_path.name}")
-    rgb = load_rgb_preview(sr_tif_path)
+    rgb, profile, bounds = load_rgb_uint8(orthophoto_path)
     H, W = rgb.shape[:2]
 
-    print(f"Rasterizing {vector_path.name} ...")
-    label_raster, gdf = rasterize_vector_masks(vector_path, sr_tif_path)
-    n_segments = int(label_raster.max())
-    print(f"  Segments to render: {n_segments}")
+    gdf = gpd.read_file(segments_geojson)
+    if gdf.crs and gdf.crs != profile["crs"]:
+        gdf = gdf.to_crs(profile["crs"])
 
-    # Build a per-segment color LUT using a qualitative colormap.
-    # We seed the RNG so colors are consistent across runs for the same tile.
-    rng = np.random.default_rng(seed=42)
-    # Shape: (N+1, 4) RGBA — index 0 = background (transparent)
-    colors_rgba = np.zeros((n_segments + 1, 4), dtype=np.float32)
-    colors_rgba[1:, :3] = rng.uniform(0.2, 0.95, size=(n_segments, 3))
-    colors_rgba[1:, 3] = alpha
+    px_w = (bounds.right - bounds.left) / W
+    px_h = (bounds.top   - bounds.bottom) / H
 
-    # Build colored mask overlay: (H, W, 4) RGBA
-    overlay = colors_rgba[label_raster]   # fancy indexing — very fast
+    def geo_to_px(x, y):
+        return (x - bounds.left) / px_w, (bounds.top - y) / px_h
+
+    rng = np.random.default_rng(42)
+    n   = len(gdf)
+    colors = rng.uniform(0.2, 0.9, size=(n, 3))
 
     fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=dpi)
     ax.imshow(rgb)
-    ax.imshow(overlay, interpolation="none")
 
-    # Draw polygon outlines on top for sharp boundaries
-    # We use gdf.boundary for clean edges without fill (fill is already done above)
-    with rasterio.open(sr_tif_path) as src:
-        bounds = src.bounds
-        pixel_width  = (bounds.right - bounds.left)  / W
-        pixel_height = (bounds.top   - bounds.bottom) / H
-
-    # Convert geographic coordinates to pixel coordinates for matplotlib
-    def geo_to_pixel(x, y):
-        col = (x - bounds.left)   / pixel_width
-        row = (bounds.top  - y)   / pixel_height
-        return col, row
-
-    for geom in gdf.geometry:
+    for i, (_, row) in enumerate(gdf.iterrows()):
+        geom = row.geometry
         if geom is None or geom.is_empty:
             continue
-        # Handle both Polygon and MultiPolygon
         polys = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
+        color = colors[i % n]
         for poly in polys:
             xs, ys = poly.exterior.xy
-            px, py = geo_to_pixel(np.array(xs), np.array(ys))
+            px, py = geo_to_px(np.array(xs), np.array(ys))
+            # Filled polygon at low opacity
+            ax.fill(px, py, color=color, alpha=alpha_fill)
+            # Sharp edge on top
             ax.plot(px, py, color=edge_color, linewidth=edge_width, alpha=0.9)
-            # Interior rings (holes) — rare for farm plots but handle anyway
-            for interior in poly.interiors:
-                xs_i, ys_i = interior.xy
-                px_i, py_i = geo_to_pixel(np.array(xs_i), np.array(ys_i))
-                ax.plot(px_i, py_i, color=edge_color, linewidth=edge_width * 0.7, alpha=0.7)
 
-    ax.set_title(f"{title}\n{n_segments} segments | {vector_path.name}", fontsize=11)
+    ax.set_title(f"{title}\n{n} segments | {orthophoto_path.name}", fontsize=11)
     ax.axis("off")
-
     plt.tight_layout()
-    plt.savefig(output_png_path, bbox_inches="tight", pad_inches=0.1)
+    plt.savefig(output_png, bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
-    print(f"Saved overlay → {output_png_path}")
+    print(f"Overlay saved → {output_png}")
+
+
+def overlay_bboxes_on_orthophoto(
+    orthophoto_path: Path,
+    bbox_geojson: Path,          # bounding box polygons from export_bboxes()
+    output_png: Path,
+    edge_color: str = "lime",
+    fill_color: str = "lime",
+    fill_alpha: float = 0.08,
+    edge_width: float = 1.2,
+    show_labels: bool = True,    # show plot_id inside each bbox
+    figsize: tuple = (16, 16),
+    dpi: int = 150,
+    title: str = "Farm plot bounding boxes",
+) -> None:
+    """
+    Overlay bounding box rectangles on the orthophoto.
+    Labels show plot_id so you can cross-reference with the GeoJSON.
+    """
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+
+    rgb, profile, bounds = load_rgb_uint8(orthophoto_path)
+    H, W = rgb.shape[:2]
+
+    gdf = gpd.read_file(bbox_geojson)
+    # Bounding box GeoJSON is in WGS84 — reproject to raster CRS
+    if gdf.crs and str(gdf.crs) != str(profile["crs"]):
+        gdf = gdf.to_crs(profile["crs"])
+
+    px_w = (bounds.right - bounds.left) / W
+    px_h = (bounds.top   - bounds.bottom) / H
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=dpi)
+    ax.imshow(rgb)
+
+    for _, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+
+        minx, miny, maxx, maxy = geom.bounds
+        # Convert geographic corners to pixel coordinates
+        px_x0 = (minx - bounds.left) / px_w
+        px_y0 = (bounds.top - maxy)   / px_h
+        px_w_  = (maxx - minx) / px_w
+        px_h_  = (maxy - miny) / px_h
+
+        rect = mpatches.Rectangle(
+            (px_x0, px_y0), px_w_, px_h_,
+            linewidth=edge_width,
+            edgecolor=edge_color,
+            facecolor=fill_color,
+            alpha=fill_alpha,
+        )
+        ax.add_patch(rect)
+
+        if show_labels:
+            cx = px_x0 + px_w_ / 2
+            cy = px_y0 + px_h_ / 2
+            area_ha = row.get("area_ha", "")
+            label   = f"{row.get('plot_id', '')} ({area_ha:.2f}ha)" if area_ha else str(row.get("plot_id", ""))
+            ax.text(
+                cx, cy, label,
+                ha="center", va="center",
+                fontsize=6, color="white",
+                fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.1", fc="black", alpha=0.45, ec="none"),
+            )
+
+    ax.set_title(f"{title}\n{len(gdf)} plots | {orthophoto_path.name}", fontsize=11)
+    ax.axis("off")
+    plt.tight_layout()
+    plt.savefig(output_png, bbox_inches="tight", pad_inches=0.1)
+    plt.close(fig)
+    print(f"BBox overlay saved → {output_png}")
 
 
 def overlay_comparison(
-    sr_tif_path: Path,
-    raw_segments_path: Path,      # all SAM2 segments (before NDVI filter)
-    filtered_plots_path: Path,    # farm plots only (after NDVI filter)
-    output_png_path: Path,
-    alpha: float = 0.35,
-    figsize: tuple = (20, 10),
+    orthophoto_path: Path,
+    segments_geojson: Path,
+    bbox_geojson: Path,
+    output_png: Path,
+    figsize: tuple = (24, 12),
     dpi: int = 150,
 ) -> None:
-    """
-    Side-by-side: raw SAM2 output (left) vs filtered farm plots (right).
-    Useful for evaluating how well the NDVI filter is working.
-    """
-    output_png_path.parent.mkdir(parents=True, exist_ok=True)
+    """Side-by-side: full polygons (left) vs bounding boxes (right)."""
+    output_png.parent.mkdir(parents=True, exist_ok=True)
 
-    rgb = load_rgb_preview(sr_tif_path)
+    rgb, profile, bounds = load_rgb_uint8(orthophoto_path)
     H, W = rgb.shape[:2]
+    px_w = (bounds.right - bounds.left) / W
+    px_h = (bounds.top   - bounds.bottom) / H
 
-    def build_overlay(vector_path):
-        label_raster, gdf = rasterize_vector_masks(vector_path, sr_tif_path)
-        n = int(label_raster.max())
-        rng = np.random.default_rng(seed=42)
-        colors = np.zeros((n + 1, 4), dtype=np.float32)
-        colors[1:, :3] = rng.uniform(0.2, 0.95, size=(n, 3))
-        colors[1:, 3] = alpha
-        return colors[label_raster], gdf, n
+    def geo_to_px(x, y):
+        return (x - bounds.left) / px_w, (bounds.top - y) / px_h
 
-    raw_overlay,      gdf_raw,      n_raw      = build_overlay(raw_segments_path)
-    filtered_overlay, gdf_filtered, n_filtered = build_overlay(filtered_plots_path)
+    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=figsize, dpi=dpi)
 
-    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=figsize, dpi=dpi)
+    # LEFT — full polygon masks
+    gdf_seg = gpd.read_file(segments_geojson)
+    if gdf_seg.crs and str(gdf_seg.crs) != str(profile["crs"]):
+        gdf_seg = gdf_seg.to_crs(profile["crs"])
 
-    for ax, overlay, gdf, n, label in [
-        (ax_left,  raw_overlay,      gdf_raw,      n_raw,      "Raw SAM2"),
-        (ax_right, filtered_overlay, gdf_filtered, n_filtered, "Farm plots (NDVI filtered)"),
-    ]:
-        ax.imshow(rgb)
-        ax.imshow(overlay, interpolation="none")
-        ax.set_title(f"{label}\n{n} segments", fontsize=11)
-        ax.axis("off")
+    ax_l.imshow(rgb)
+    rng = np.random.default_rng(42)
+    colors = rng.uniform(0.2, 0.9, size=(len(gdf_seg), 3))
+    for i, (_, row) in enumerate(gdf_seg.iterrows()):
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        for poly in (geom.geoms if geom.geom_type == "MultiPolygon" else [geom]):
+            xs, ys = poly.exterior.xy
+            px, py = geo_to_px(np.array(xs), np.array(ys))
+            ax_l.fill(px, py, color=colors[i % len(gdf_seg)], alpha=0.25)
+            ax_l.plot(px, py, color="cyan", linewidth=0.6, alpha=0.9)
+    ax_l.set_title(f"SAM3 segments ({len(gdf_seg)})", fontsize=11)
+    ax_l.axis("off")
 
-    plt.suptitle(sr_tif_path.stem, fontsize=13, y=1.01)
+    # RIGHT — bounding boxes
+    gdf_bb = gpd.read_file(bbox_geojson)
+    if gdf_bb.crs and str(gdf_bb.crs) != str(profile["crs"]):
+        gdf_bb = gdf_bb.to_crs(profile["crs"])
+
+    ax_r.imshow(rgb)
+    for _, row in gdf_bb.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        minx, miny, maxx, maxy = geom.bounds
+        px_x0 = (minx - bounds.left) / px_w
+        px_y0 = (bounds.top - maxy)   / px_h
+        pw    = (maxx - minx) / px_w
+        ph    = (maxy - miny) / px_h
+        ax_r.add_patch(mpatches.Rectangle(
+            (px_x0, px_y0), pw, ph,
+            linewidth=1.0, edgecolor="yellow",
+            facecolor="yellow", alpha=0.08,
+        ))
+    ax_r.set_title(f"Bounding boxes ({len(gdf_bb)})", fontsize=11)
+    ax_r.axis("off")
+
+    plt.suptitle(orthophoto_path.stem, fontsize=13, y=1.01)
     plt.tight_layout()
-    plt.savefig(output_png_path, bbox_inches="tight", pad_inches=0.1)
+    plt.savefig(output_png, bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
-    print(f"Saved comparison → {output_png_path}")
+    print(f"Comparison saved → {output_png}")
 
-from pathlib import Path
+# --- CORE HELPER FUNCTION ---
+# (Keep this in your module so the 3 functions below can share it)
+
+def _add_bboxes_to_ax(
+    ax: plt.Axes,
+    geojson_path: Path,
+    bounds, 
+    px_w: float, 
+    px_h: float, 
+    profile_crs, 
+    edge_c: str, 
+    fill_c: str, 
+    fill_alpha: float, 
+    edge_width: float, 
+    label_prefix: str
+) -> int:
+    """Helper to read a GeoJSON and draw bounding boxes onto an existing matplotlib Axis."""
+    if not geojson_path.exists():
+        return 0
+        
+    gdf = gpd.read_file(geojson_path)
+    if gdf.empty:
+        return 0
+        
+    if gdf.crs and str(gdf.crs) != str(profile_crs):
+        gdf = gdf.to_crs(profile_crs)
+
+    for _, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+
+        minx, miny, maxx, maxy = geom.bounds
+        px_x0 = (minx - bounds.left) / px_w
+        px_y0 = (bounds.top - maxy)   / px_h
+        px_w_  = (maxx - minx) / px_w
+        px_h_  = (maxy - miny) / px_h
+
+        rect = mpatches.Rectangle(
+            (px_x0, px_y0), px_w_, px_h_,
+            linewidth=edge_width,
+            edgecolor=edge_c,
+            facecolor=fill_c,
+            alpha=fill_alpha,
+        )
+        ax.add_patch(rect)
+        
+        # Label
+        cx = px_x0 + px_w_ / 2
+        cy = px_y0 + px_h_ / 2
+        ax.text(
+            cx, cy, f"{label_prefix}-{row.get('plot_id', '')}",
+            ha="center", va="center",
+            fontsize=5, color="white", fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.1", fc="black", alpha=0.4, ec="none"),
+        )
+    return len(gdf)
 
 
+# --- 1. OVERLAY BOTH (Plots and Irrigation) ---
+
+def overlay_all_bboxes(
+    orthophoto_path: Path,
+    plot_bbox_geojson: Path,
+    irrigation_bbox_geojson: Path,
+    output_png: Path,
+    plot_color: str = "lime",
+    irrigation_color: str = "cyan",
+    fill_alpha: float = 0.15,
+    edge_width: float = 1.2,
+    figsize: tuple = (18, 18),
+    dpi: int = 150,
+) -> None:
+    """Overlay both farm plots and irrigation bounding boxes on the orthophoto."""
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+    rgb, profile, bounds = load_rgb_uint8(orthophoto_path)
+    
+    H, W = rgb.shape[:2]
+    px_w = (bounds.right - bounds.left) / W
+    px_h = (bounds.top   - bounds.bottom) / H
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=dpi)
+    ax.imshow(rgb)
+
+    n_plots = _add_bboxes_to_ax(ax, plot_bbox_geojson, bounds, px_w, px_h, profile["crs"], plot_color, plot_color, fill_alpha, edge_width, "P")
+    n_irrig = _add_bboxes_to_ax(ax, irrigation_bbox_geojson, bounds, px_w, px_h, profile["crs"], irrigation_color, irrigation_color, fill_alpha, edge_width, "I")
+
+    legend_elements = [
+        mpatches.Patch(facecolor=plot_color, edgecolor=plot_color, alpha=0.5, label=f'Farm Plots ({n_plots})'),
+        mpatches.Patch(facecolor=irrigation_color, edgecolor=irrigation_color, alpha=0.5, label=f'Irrigation ({n_irrig})')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=12)
+
+    ax.set_title(f"Classified Farm Plots & Irrigation\n{orthophoto_path.name}", fontsize=14)
+    ax.axis("off")
+    plt.tight_layout()
+    plt.savefig(output_png, bbox_inches="tight", pad_inches=0.1)
+    plt.close(fig)
+    print(f"Combined overlay saved → {output_png}")
 
 
+# --- 2. OVERLAY FARM PLOTS ONLY ---
 
-if __name__ == "__main__":
-    OUT_DIR = Path.joinpath(Path.cwd(), "segmented_output").resolve()
-    GEE_OUTPUT = Path.joinpath(Path.cwd(), "gee_output").resolve()
-    # Preview just the farm plots on true color
-    overlay_masks_on_image(
-    sr_tif_path     = GEE_OUTPUT/"sr.tif",
-    vector_path     = OUT_DIR / "sam2_vector.json",
-    output_png_path = OUT_DIR / "preview_filtered.png",
-    alpha=0.35,
-    edge_color="yellow",
-    title="Farm plot segmentation - True color",
-    )
+def overlay_plot_bboxes(
+    orthophoto_path: Path,
+    plot_bbox_geojson: Path,
+    output_png: Path,
+    color: str = "lime",
+    fill_alpha: float = 0.15,
+    edge_width: float = 1.2,
+    figsize: tuple = (18, 18),
+    dpi: int = 150,
+) -> None:
+    """Overlay ONLY farm plot bounding boxes on the orthophoto."""
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+    rgb, profile, bounds = load_rgb_uint8(orthophoto_path)
+    
+    H, W = rgb.shape[:2]
+    px_w = (bounds.right - bounds.left) / W
+    px_h = (bounds.top   - bounds.bottom) / H
 
-    overlay_masks_on_image(
-    sr_tif_path     = OUT_DIR/"sam2_prep_ndvi.tif",
-    vector_path     = OUT_DIR / "sam2_vector.json",
-    output_png_path = OUT_DIR / "preview_prep.png",
-    alpha=0.35,
-    edge_color="yellow",
-    title="Farm plot segmentation - NDVI",
-    )
+    fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=dpi)
+    ax.imshow(rgb)
 
-    # Side-by-side raw vs filtered — useful for tuning the NDVI threshold
-    overlay_comparison(
-        sr_tif_path          = GEE_OUTPUT/"sr.tif",
-        raw_segments_path    = OUT_DIR/"sam2_vector.json",
-        filtered_plots_path  = OUT_DIR / "filtered_plot.gpkg",
-        output_png_path      = OUT_DIR / "filtered_comparison.png",
-    )
+    n_plots = _add_bboxes_to_ax(ax, plot_bbox_geojson, bounds, px_w, px_h, profile["crs"], color, color, fill_alpha, edge_width, "P")
+
+    legend_elements = [mpatches.Patch(facecolor=color, edgecolor=color, alpha=0.5, label=f'Farm Plots ({n_plots})')]
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=12)
+
+    ax.set_title(f"Farm Plots Only\n{orthophoto_path.name}", fontsize=14)
+    ax.axis("off")
+    plt.tight_layout()
+    plt.savefig(output_png, bbox_inches="tight", pad_inches=0.1)
+    plt.close(fig)
+    print(f"Plot overlay saved → {output_png}")
+
+
+# --- 3. OVERLAY IRRIGATION ONLY ---
+
+def overlay_irrigation_bboxes(
+    orthophoto_path: Path,
+    irrigation_bbox_geojson: Path,
+    output_png: Path,
+    color: str = "cyan",
+    fill_alpha: float = 0.15,
+    edge_width: float = 1.2,
+    figsize: tuple = (18, 18),
+    dpi: int = 150,
+) -> None:
+    """Overlay ONLY irrigation bounding boxes on the orthophoto."""
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+    rgb, profile, bounds = load_rgb_uint8(orthophoto_path)
+    
+    H, W = rgb.shape[:2]
+    px_w = (bounds.right - bounds.left) / W
+    px_h = (bounds.top   - bounds.bottom) / H
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=dpi)
+    ax.imshow(rgb)
+
+    n_irrig = _add_bboxes_to_ax(ax, irrigation_bbox_geojson, bounds, px_w, px_h, profile["crs"], color, color, fill_alpha, edge_width, "I")
+
+    legend_elements = [mpatches.Patch(facecolor=color, edgecolor=color, alpha=0.5, label=f'Irrigation ({n_irrig})')]
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=12)
+
+    ax.set_title(f"Irrigation Canals Only\n{orthophoto_path.name}", fontsize=14)
+    ax.axis("off")
+    plt.tight_layout()
+    plt.savefig(output_png, bbox_inches="tight", pad_inches=0.1)
+    plt.close(fig)
+    print(f"Irrigation overlay saved → {output_png}")

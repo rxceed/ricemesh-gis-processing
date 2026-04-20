@@ -1,8 +1,10 @@
 import cv2
 import os
 from pathlib import Path
+from argparse import ArgumentParser
+import time
 
-def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, end_sec:float=None):
+def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, end_sec:float=None, frame_interval:int=1, compression:int=0):
     """
     Extracts frames from a specific section of a video and saves them as PNGs.
     
@@ -52,37 +54,76 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
     current_frame = start_frame
     saved_count = 0
 
-    print(f"Processing '{video_path}' from {start_sec}s to {end_sec if end_sec else 'end'}s...")
+    print(f"Processing '{video_path}' from {start_sec}s to {end_sec if end_sec else 'end'}s with {interval} frames interval and {compression} PNG compression...")
     
     while current_frame < end_frame:
         ret, frame = cap.read()
 
         if not ret:
             break # Reached the end of the video
-
+        
+        frame = cv2.resize(frame, (1920, 1080))
         # You can use 'saved_count' to start filenames at 0000, 
         # or 'current_frame' to keep the original video frame index. 
         # Using saved_count here for a clean 0-indexed sequence.
         filename = f"frame_{saved_count:04d}.png"
         filepath = os.path.join(output_dir, filename)
 
-        cv2.imwrite(filepath, frame)
+        cv2.imwrite(filepath, frame, [cv2.IMWRITE_PNG_COMPRESSION, compression])
 
-        current_frame += 180
+        current_frame += frame_interval
         saved_count += 1
         cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
 
     cap.release()
     print(f"Success! Extracted {saved_count} frames to the '{output_dir}' directory.")
 
+def main(input, start, end, interval, compression):
+    t_start = time.perf_counter()
+    if input:
+        input_path_str = str(args.input)
+        input_parent_path = Path(args.input).parent.resolve()
+        input_file_name = ((input_path_str.split("/"))[-1].split("."))[0]
+        output_path = Path.joinpath(input_parent_path, "parsed_"+input_file_name)
+        input_video = Path.joinpath(Path.cwd(), input_path_str).resolve()
+        output_folder = Path.joinpath(Path.cwd(), output_path).resolve()
+    else:
+        print("No input path provided")
+        return
+    video_to_frames(input_video, output_folder, start, end, interval, compression)
+    t_end = time.perf_counter()
+    print(f"Parsing completed in {t_end-t_start} seconds")
+
 # --- Example Usage ---
 if __name__ == "__main__":
-    # Replace these with your actual file path and desired output folder
-    input_video = Path.joinpath(Path.cwd(), "dataset/DJI_20260415164716_0081_D.mp4").resolve()
-    output_folder = Path.joinpath(Path.cwd(), "dataset/parsed/DJI_20260415164716_0081_D").resolve()
-    
-    # Example: Start at 5.5 seconds and stop at 12 seconds
+    arg_parser = ArgumentParser()
+    arg_parser.add_argument("input", type=str, help="file path to input video relative to working directory")
+    arg_parser.add_argument("-s", "--start-sec", type=float, help="starting point of the video that want to be parsed in seconds")
+    arg_parser.add_argument("-e","--end-sec", type=float, help="ending point of the video that want to be parsed in seconds")
+    arg_parser.add_argument("-f", "--frame-interval", type=int, help="frame interval of the parser")
+    arg_parser.add_argument("-c", "--compression", type=int, help="image PNG compression on a scale from 0 (no compression) to 9 (max compression)")
+    args = arg_parser.parse_args()
+
     start_time = 0
     stop_time = None
+    interval = None
+    input_path_str = None
+    compression = None
     
-    video_to_frames(input_video, output_folder, start_sec=start_time, end_sec=stop_time)
+    if args.input:
+        input_path_str = str(args.input)
+    if args.start_sec:
+        start_time = float(args.start_sec)
+    if args.end_sec:
+        stop_time = float(args.end_sec)
+    if args.frame_interval:
+        interval = int(args.frame_interval)
+    if args.compression:
+        if int(args.compression) < 0:
+            compression = 0
+        elif int(args.compression) > 9:
+            compression = 9
+        else:
+            compression = int(args.compression)
+    
+    main(input_path_str, start_time, stop_time, interval, compression)

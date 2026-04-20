@@ -8,10 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
-
+.vscode
 .env
 
 outputs
+output
 secrets
 realesrgan
 dataset

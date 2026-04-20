@@ -2,27 +2,16 @@ from pathlib import Path
 from components.upscaling import ldsr2
 from components.segmentation import samgeo_sam2
 
-def segment_plot_(src_tif: Path, dst_dir: Path, ndvi_threshold: float = 0.15):
+def segment_plot(src_tif: dict[Path], dst_dir: Path, tile_size:int=1024, min_area_m2:int=100, overlap:int=128):
     dst_dir.mkdir(parents=True, exist_ok=True)
-    SAM2_PREP_TIF_NIR_PATH = Path.joinpath(dst_dir, "sam2_prep_nir.tif").resolve()
-    SAM2_PREP_TIF_NDVI_PATH = Path.joinpath(dst_dir, "sam2_prep_ndvi.tif").resolve()
-    SAM2_MASK_TIF_PATH = Path.joinpath(dst_dir, "sam2_mask.tif").resolve()
-    SAM2_VECTOR_GJSON_PATH = Path.joinpath(dst_dir, "sam2_vector.json").resolve()
-    FILTERED_GPKG_PATH = Path.joinpath(dst_dir, "filtered_plot.gpkg").resolve()
-    NDVI_THRESHOLD = ndvi_threshold
-    ldsr_model = ldsr2.load_ldsr_model()
-    sr_output = ldsr2.run_ldsr_on_geotiff(ldsr_model, src_tif)
-    _, ndvi, profile = samgeo_sam2.sam_prep_ndvi(sr_output, SAM2_PREP_TIF_NDVI_PATH, SAM2_PREP_TIF_NIR_PATH)
-    
-    import matplotlib.pyplot as plt
-    plt.hist(ndvi.flatten(), bins=100, range=(-0.2, 0.8))
-    plt.axvline(NDVI_THRESHOLD, color='r', label='current threshold')
-    plt.xlabel("NDVI")
-    plt.ylabel("Pixel count")
-    plt.title("NDVI distribution — pick threshold at the valley between soil and vegetation")
-    plt.legend()
-    plt.savefig("ndvi_histogram.png")
-
-    samgeo_sam2.run_sam2_automatic(SAM2_PREP_TIF_NDVI_PATH, SAM2_MASK_TIF_PATH, SAM2_VECTOR_GJSON_PATH)
-    samgeo_sam2.filter_farm_plots(SAM2_VECTOR_GJSON_PATH, src_tif, ndvi, profile, FILTERED_GPKG_PATH, NDVI_THRESHOLD)
-
+    src_tif_raw = src_tif["raw"]
+    src_tif_evi = src_tif["evi"]
+    src_tif_ndwi = src_tif["ndwi"]
+    raw_mask, raw_vector = samgeo_sam2.segment_orthophoto(src_tif_raw, dst_dir, tile_size, min_area_m2=min_area_m2, overlap=overlap)
+    raw_bbox = Path.joinpath(dst_dir, "raw_bbox.geojson")
+    samgeo_sam2.export_bboxes(raw_vector, raw_mask, raw_bbox)
+    plot_mask, plot_bbox, irrig_mask, irrig_bbox = samgeo_sam2.filter_and_classify_segments(raw_mask, src_tif_evi, src_tif_ndwi, dst_dir, 
+                                                                                            evi_threshold=0.2, ndwi_threshold=0.1)
+    mask_path = {'raw': raw_mask, 'plot': plot_mask, 'irrig': irrig_mask}
+    bbox_path = {'raw': raw_bbox, 'plot': plot_bbox, 'irrig': irrig_bbox}
+    return mask_path, bbox_path, raw_vector
