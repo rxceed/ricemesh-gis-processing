@@ -61,7 +61,7 @@ def filter_and_classify_segments(
     # Logic: High NDWI is irrigation. High EVI (but not high NDWI) is farm plot.
     # Everything else (roads, buildings, low vegetation) is ignored.
     is_irrigation = (mean_ndwi > ndwi_threshold) & valid_counts
-    is_plot = ((mean_evi > evi_threshold) & (mean_ndwi <= ndwi_threshold)) & valid_counts
+    is_plot = ~(((mean_evi > evi_threshold) & (mean_ndwi <= ndwi_threshold)) & valid_counts)
     
     # Create lookup arrays and apply to original mask
     irrigation_lookup = np.zeros(len(counts), dtype=mask.dtype)

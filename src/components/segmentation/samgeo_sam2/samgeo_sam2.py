@@ -5,7 +5,7 @@ import numpy as np
 import rasterio
 from rasterio.windows import Window
 from rasterio.transform import from_bounds
-from samgeo import SamGeo2
+from samgeo import SamGeo2, SamGeo
 from samgeo.common import raster_to_vector
 
 
@@ -86,7 +86,7 @@ def read_tile_as_uint8(
 
 # ── Tiled inference ───────────────────────────────────────────────────────────
 
-def segment_orthophoto(
+def segment_orthophoto_sam2(
     orthophoto_path: Path,
     output_dir: Path,
     tile_size: int = 1024,
