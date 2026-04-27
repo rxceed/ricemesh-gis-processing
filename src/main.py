@@ -2,23 +2,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-from utils import dms_to_decimal, create_bounding_box
-from modules import plot_segmentation
-from modules import visualize
+from modules.plot_segmentation import segment_plot_fastsam
+from components.segmentation.overlay import overlay_plot_bboxes, overlay_comparison, overlay_bboxes_on_orthophoto, overlay_segments_on_orthophoto
 
 def main():
-    RAW_TIF_PATH = Path.joinpath(Path.cwd(), "dataset/proc/proc_rgb.tif")
-    EVI_TIF_PATH = Path.joinpath(Path.cwd(), "dataset/proc/proc_evi.tif")
-    NDWI_TIF_PATH = Path.joinpath(Path.cwd(), "dataset/proc/proc_ndwi.tif")
-    SRC_PATH = {"raw": RAW_TIF_PATH, "evi": EVI_TIF_PATH, "ndwi": NDWI_TIF_PATH}
+    RAW_TIF_PATH = Path.joinpath(Path.cwd(), "dataset/proc/proc_raw.tif")
     DST_DIR_PATH = Path.joinpath(Path.cwd(), "output")
-    #masks, bbox, raw_segment = plot_segmentation.segment_plot(SRC_PATH, DST_DIR_PATH, tile_size=1024, min_area_m2=200, overlap=0)
-    masks, bbox, raw_segment = plot_segmentation.segment_plot_samtext(SRC_PATH, DST_DIR_PATH, tile_size=2048, min_area_m2=100, overlap=256)
-    visualize.overlay_segments_on_orthophoto(SRC_PATH['raw'], raw_segment, Path.joinpath(DST_DIR_PATH, "overlay_segments.png"))
-    visualize.overlay_bboxes_on_orthophoto(SRC_PATH['raw'], bbox['raw'], Path.joinpath(DST_DIR_PATH, "overlay_bboxes.png"))
-    visualize.overlay_comparison(SRC_PATH['raw'], raw_segment, bbox['raw'], Path.joinpath(DST_DIR_PATH, "overlay_comparison.png"))
-    visualize.overlay_all_bboxes(SRC_PATH['raw'], bbox['plot'], bbox['irrig'], Path.joinpath(DST_DIR_PATH, "overlay_labeled_all.png"))
-    visualize.overlay_plot_bboxes(SRC_PATH['raw'], bbox['plot'], Path.joinpath(DST_DIR_PATH, "overlay_labeled_plots.png"))
-    visualize.overlay_irrigation_bboxes(SRC_PATH['raw'], bbox['irrig'], Path.joinpath(DST_DIR_PATH, "overlay_labeled_irrigation.png"))
+    masks, bboxes, raw_vector = segment_plot_fastsam(RAW_TIF_PATH, DST_DIR_PATH, use_vari=False, 
+                                                     overlap=0, tile_size=4096, iou=0.9, conf=0.3,
+                                                     model_type=Path.joinpath(Path.cwd(), "best.pt"))
+    overlay_segments_on_orthophoto(RAW_TIF_PATH, raw_vector, Path.joinpath(DST_DIR_PATH, "overlay_segments.png"))
+    overlay_bboxes_on_orthophoto(RAW_TIF_PATH, bboxes['raw'], Path.joinpath(DST_DIR_PATH, "overlay_bbox_raw.png"), edge_color="blue")
+    overlay_plot_bboxes(RAW_TIF_PATH, bboxes['plot'], Path.joinpath(DST_DIR_PATH, "overlay_plot_bbox.png"))
 if __name__ == "__main__":
     main()

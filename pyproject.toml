@@ -18,10 +18,11 @@ dependencies = [
     "pystac-client>=0.9.0",
     "python-dotenv>=1.2.2",
     "scikit-image>=0.26.0",
-    "segment-geospatial[samgeo2,text]>=1.3.2",
+    "segment-geospatial[sam2]>=1.3.2",
     "torch>=2.11.0",
     "torchvision>=0.26.0",
     "transformers<5.0.0",
+    "ultralytics>=8.0.122",
 ]
 [tool.uv]
 environments = [

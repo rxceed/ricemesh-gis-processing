@@ -11,12 +11,9 @@ wheels/
 .vscode
 .env
 
-outputs
 output
 secrets
 realesrgan
 dataset
 DSen2
-segmented_output
-gee_output
 opensr-ldsrs2_v1_0_0.ckpt
