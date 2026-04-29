@@ -1,10 +1,9 @@
 import cv2
-import os
 from pathlib import Path
 from argparse import ArgumentParser
 import time
 
-def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, end_sec:float=None, frame_interval:int=1, compression:int=0):
+def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, end_sec:float=None, frame_interval:int=1, compression:int=0) -> tuple[int, Path]:
     """
     Extracts frames from a specific section of a video and saves them as PNGs.
     
@@ -15,7 +14,7 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
         end_sec (float): The time in seconds to stop extracting. 
         If None, processes until the end of the video.
     """
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Open the video using OpenCV
     if video_path.exists():
@@ -28,25 +27,22 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
         elif pathSplit[1] == "MP4":
             newPath = Path(pathSplit[0]+".mp4")
         else:
-            print(f"Error: File is not in mp4 format")
+            raise Exception(f"Error: File is not in mp4 format")
         cap = cv2.VideoCapture(newPath)
 
     # Check if the video was opened successfully
     if not cap.isOpened():
-        print(f"Error: Could not open video at {video_path}")
-        return
+        raise Exception(f"Error: Could not open video at {video_path}")
 
     # Get the frames per second (FPS) of the video
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0:
-        print("Error: Could not determine FPS of the video.")
         cap.release()
-        return
+        raise Exception("Could not determine FPS of the video.")
 
     # Convert seconds to specific frame numbers
     start_frame = int(start_sec * fps)
     end_frame = int(end_sec * fps) if end_sec is not None else float('inf')
-
     # Jump directly to the starting frame (efficient seeking)
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     
@@ -54,8 +50,8 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
     current_frame = start_frame
     saved_count = 0
 
-    print(f"Processing '{video_path}' from {start_sec}s to {end_sec if end_sec else 'end'}s with {interval} frames interval and {compression} PNG compression...")
-    
+    #print(f"Processing '{video_path}' from {start_sec}s to {end_sec if end_sec else 'end'}s with {interval} frames interval and {compression} PNG compression...")
+
     while current_frame < end_frame:
         ret, frame = cap.read()
 
@@ -67,7 +63,7 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
         # or 'current_frame' to keep the original video frame index. 
         # Using saved_count here for a clean 0-indexed sequence.
         filename = f"frame_{saved_count:04d}.png"
-        filepath = os.path.join(output_dir, filename)
+        filepath = Path.joinpath(output_dir, filename)
 
         cv2.imwrite(filepath, frame, [cv2.IMWRITE_PNG_COMPRESSION, compression])
 
@@ -76,7 +72,7 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
         cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
 
     cap.release()
-    print(f"Success! Extracted {saved_count} frames to the '{output_dir}' directory.")
+    return saved_count, output_dir
 
 def main(input, start, end, interval, compression):
     t_start = time.perf_counter()
@@ -90,9 +86,9 @@ def main(input, start, end, interval, compression):
     else:
         print("No input path provided")
         return
-    video_to_frames(input_video, output_folder, start, end, interval, compression)
+    count, output_dir = video_to_frames(input_video, output_folder, start, end, interval, compression)
     t_end = time.perf_counter()
-    print(f"Parsing completed in {t_end-t_start} seconds")
+    print(f"Parsing completed in {t_end-t_start} seconds. {count} frames saved to {output_dir}")
 
 # --- Example Usage ---
 if __name__ == "__main__":

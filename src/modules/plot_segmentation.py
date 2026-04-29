@@ -1,5 +1,5 @@
 from pathlib import Path
-from components.segmentation import samgeo_sam2, fastsam, export_bboxes, filter_and_classify_segments_vari
+from components.segmentation import samgeo_sam2, fastsam_yolo, export_bboxes, filter_and_classify_segments_vari
 
 def segment_plot(src_tif: dict[Path], dst_dir: Path, tile_size:int=1024, min_area_m2:int=100, overlap:int=128):
     dst_dir.mkdir(parents=True, exist_ok=True)
@@ -36,12 +36,12 @@ def segment_plot_fastsam(src_tif: dict, dst_dir: Path, use_vari:bool=True, model
     dst_dir.mkdir(parents=True, exist_ok=True)
     raw_bbox = Path.joinpath(dst_dir, "raw_bbox.geojson")
     if use_vari:
-        raw_mask, raw_vector = fastsam.segment_orthophoto_fastsam_vari(src_tif, dst_dir, 
+        raw_mask, raw_vector = fastsam_yolo.segment_orthophoto_fastsam_vari(src_tif, dst_dir, 
                                                                         tile_size=tile_size, min_area_m2=min_area_m2, overlap=overlap,
                                                                         iou=iou, conf=conf,
                                                                         model_variant=model_type)
     else:
-        raw_mask, raw_vector = fastsam.segment_orthophoto_fastsam_rgb(src_tif, dst_dir, 
+        raw_mask, raw_vector = fastsam_yolo.segment_orthophoto_fastsam_rgb(src_tif, dst_dir, 
                                                                 tile_size=tile_size, min_area_m2=min_area_m2, overlap=overlap, 
                                                                 iou=iou, conf=conf,
                                                                 model_variant=model_type)
