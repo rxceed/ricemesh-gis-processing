@@ -50,7 +50,7 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
     current_frame = start_frame
     saved_count = 0
 
-    #print(f"Processing '{video_path}' from {start_sec}s to {end_sec if end_sec else 'end'}s with {interval} frames interval and {compression} PNG compression...")
+    print(f"Processing '{video_path}' from {start_sec}s to {end_sec if end_sec else 'end'}s with {frame_interval} frames interval and {compression} PNG compression...")
 
     while current_frame < end_frame:
         ret, frame = cap.read()

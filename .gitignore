@@ -13,7 +13,5 @@ wheels/
 
 output
 secrets
-realesrgan
 dataset
-DSen2
-opensr-ldsrs2_v1_0_0.ckpt
+tmp
