@@ -3,7 +3,7 @@ import numpy as np
 from pathlib import Path
 
 from modules.plot_segmentation import segment_plot_fastsam
-from components.segmentation.overlay import overlay_plot_bboxes, overlay_comparison, overlay_bboxes_on_orthophoto, overlay_segments_on_orthophoto
+from modules.segmentation.overlay import overlay_plot_bboxes, overlay_comparison, overlay_bboxes_on_orthophoto, overlay_segments_on_orthophoto
 def main():
     # RAW_TIF_PATH = Path.joinpath(Path.cwd(), "dataset/proc/proc_raw.tif")
     # DST_DIR_PATH = Path.joinpath(Path.cwd(), "output")

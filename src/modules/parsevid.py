@@ -3,7 +3,7 @@ from pathlib import Path
 from argparse import ArgumentParser
 import time
 
-def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, end_sec:float=None, frame_interval:int=1, compression:int=0) -> tuple[int, Path]:
+def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, end_sec:float=None, frame_interval:int=1, compression:int=0, resize: tuple=None) -> tuple[int, Path]:
     """
     Extracts frames from a specific section of a video and saves them as PNGs.
     
@@ -54,11 +54,10 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
 
     while current_frame < end_frame:
         ret, frame = cap.read()
-
         if not ret:
             break # Reached the end of the video
-        
-        frame = cv2.resize(frame, (1920, 1080))
+        if resize is not None:
+            frame = cv2.resize(frame, resize)
         # You can use 'saved_count' to start filenames at 0000, 
         # or 'current_frame' to keep the original video frame index. 
         # Using saved_count here for a clean 0-indexed sequence.
@@ -74,7 +73,7 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
     cap.release()
     return saved_count, output_dir
 
-def main(input, start, end, interval, compression):
+def main(input, start, end, interval, compression, resize):
     t_start = time.perf_counter()
     if input:
         input_path_str = str(args.input)
@@ -86,7 +85,7 @@ def main(input, start, end, interval, compression):
     else:
         print("No input path provided")
         return
-    count, output_dir = video_to_frames(input_video, output_folder, start, end, interval, compression)
+    count, output_dir = video_to_frames(input_video, output_folder, start, end, interval, compression, resize)
     t_end = time.perf_counter()
     print(f"Parsing completed in {t_end-t_start} seconds. {count} frames saved to {output_dir}")
 
@@ -98,6 +97,7 @@ if __name__ == "__main__":
     arg_parser.add_argument("-e","--end-sec", type=float, help="ending point of the video that want to be parsed in seconds")
     arg_parser.add_argument("-f", "--frame-interval", type=int, help="frame interval of the parser")
     arg_parser.add_argument("-c", "--compression", type=int, help="image PNG compression on a scale from 0 (no compression) to 9 (max compression)")
+    arg_parser.add_argument("--resize", type=str, help="resize the frames to the specified dimensions in WxH (e.g., 1920x1080)")
     args = arg_parser.parse_args()
 
     start_time = 0
@@ -121,5 +121,9 @@ if __name__ == "__main__":
             compression = 9
         else:
             compression = int(args.compression)
-    
-    main(input_path_str, start_time, stop_time, interval, compression)
+    if args.resize:
+        resize = tuple(map(int, args.resize.split('x')))
+    else:
+        resize = None
+
+    main(input_path_str, start_time, stop_time, interval, compression, resize)

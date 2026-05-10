@@ -1,0 +1,50 @@
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: ricemesh_mongo
+    restart: unless-stopped
+    user: "${UID}:${GID}"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
+      MONGO_INITDB_DATABASE: ricemesh
+    volumes:
+      - /mnt/volume-ssd-ubuntu-2/projects/protel/ricemesh-mongo:/data/db
+      - /mnt/volume-ssd-ubuntu-2/projects/protel/ricemesh-mongo:/data/configdb
+      # Init script: creates app user with limited privileges
+      #- ./mongo-init/init.js:/docker-entrypoint-initdb.d/init.js:ro
+    ports:
+      - "27017:27017"
+    networks:
+      - ricemesh_net
+    command: mongod --auth --bind_ip_all
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Dev-only admin UI — remove in production
+  mongo-express:
+    image: mongo-express:1.0
+    container_name: ricemesh_mongoexpress
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_ROOT_USER}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_ROOT_PASS}
+      ME_CONFIG_MONGODB_URL: "mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASS}@mongodb:27017/"
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGOEXPRESS_USER}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGOEXPRESS_PASS}
+    ports:
+      - "${MONGOEXPRESS_PORT}:${MONGOEXPRESS_PORT}"
+    networks:
+      - ricemesh_net
+    profiles:
+      - dev  # only starts with `docker compose --profile dev up`
+
+networks:
+  ricemesh_net:
+    driver: bridge
