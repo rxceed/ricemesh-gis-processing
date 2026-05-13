@@ -1,6 +1,5 @@
 from dotenv import load_dotenv as _load_dotenv
 import os as _os
-from db.connection import connect_client, connect_db
 
 _load_dotenv()
 

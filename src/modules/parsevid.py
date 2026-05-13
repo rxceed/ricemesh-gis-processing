@@ -3,7 +3,7 @@ from pathlib import Path
 from argparse import ArgumentParser
 import time
 
-def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, end_sec:float=None, frame_interval:int=1, compression:int=0, resize: tuple=None) -> tuple[int, Path]:
+def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, end_sec:float=None, frame_interval:int=1, compression:int=0, resize: tuple=None, on_progress=None, save_to_db=None) -> tuple[int, Path]:
     """
     Extracts frames from a specific section of a video and saves them as PNGs.
     
@@ -51,7 +51,7 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
     saved_count = 0
 
     print(f"Processing '{video_path}' from {start_sec}s to {end_sec if end_sec else 'end'}s with {frame_interval} frames interval and {compression} PNG compression...")
-
+    total_frames = max(1, int((end_frame - start_frame) / frame_interval))
     while current_frame < end_frame:
         ret, frame = cap.read()
         if not ret:
@@ -68,6 +68,10 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
 
         current_frame += frame_interval
         saved_count += 1
+        if on_progress is not None:
+            on_progress(saved_count, total_frames)   # ← only addition
+        if save_to_db is not None:
+            save_to_db(frame, saved_count)
         cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
 
     cap.release()

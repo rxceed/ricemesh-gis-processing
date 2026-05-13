@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from server.routers.videoOps_route import videoOps_router
-import db.connection as conn
+import db.connection_beanie as conn
 from server.common import MONGO_URI
 
 @asynccontextmanager

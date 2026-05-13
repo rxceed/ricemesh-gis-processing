@@ -14,10 +14,10 @@ TMP_DIR = PARSED_TMP_DIR.parent
 upload_tmp_dir_env = os.getenv("UPLOAD_TMP")
 UPLOAD_TMP_DIR = Path.joinpath(Path.cwd(), upload_tmp_dir_env)
 
-def _video_metadata(file: UploadFile):
+def _video_metadata(file_path: Path):
     try:
         from pymediainfo import MediaInfo
-        media_info = MediaInfo.parse(file.file)
+        media_info = MediaInfo.parse(file_path)
         if not media_info or not media_info.tracks:
             raise Exception("Unable to parse media info")
         # Locate the video track (usually the first one)
@@ -52,34 +52,19 @@ def _video_metadata(file: UploadFile):
     except Exception as e:
         return e
 
-async def _write_to_tmp(file: UploadFile, filename: Path):
+async def _write_to_tmp(file: UploadFile, filename: str):
     try:
+        CHUNK = 4096 * 1024
         file_path = Path.joinpath(UPLOAD_TMP_DIR, filename)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        async with open(file_path, "wb") as buffer:
-            await shutil.copyfileobj(file.file, buffer)
+        await file.seek(0)
+        with open(file_path, "wb") as buffer:
+            while True:
+                chunk = await file.read(CHUNK)
+                if not chunk:
+                    break
+                buffer.write(chunk)
         return file_path
-    except Exception as e:
-        return e
-
-async def _upload_to_gridfs(db, file: UploadFile, filename: str, owner_id: int = 0):
-    try:
-        metadata = _video_metadata(file)
-        gridfs_id = await gridfs_upload_file(db, file.file, filename, bucket_name="videos")
-        uploaded_video = VideoUpload(ownerId=owner_id,
-                                     filename=filename, 
-                                     gridfsFileId=gridfs_id,
-                                     sizeBytes=file.size, 
-                                     mimeType=file.content_type, 
-                                     durationSec=metadata['duration'],
-                                     fps=metadata['fps'],
-                                     resolution=metadata['resolution'],
-                                     codec=metadata['codec'])
-        up = await uploaded_video.insert()
-        if isinstance(up, VideoUpload):
-            return up
-        else:
-            raise Exception("Failed to upload video")
     except Exception as e:
         return e
 
@@ -90,14 +75,29 @@ async def video_upload_service(data: dict, file: UploadFile=File(...), db=None):
         file: uploaded file
         db: database connection
     """
-    from db.connection import connect_db, connect_client
+    from src.db.connection_beanie import connect_db, connect_client
     try:
-        filename = Path(file.filename)
-        file_path = Path.joinpath(UPLOAD_TMP_DIR, filename)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        write_task = asyncio.create_task(_write_to_tmp(file, filename))
-        upload_task = asyncio.create_task(_upload_to_gridfs(db, file, str(filename), owner_id=data.owner_id))
-        write_res, upload_res = await asyncio.gather(write_task, upload_task)
+        filename = file.filename
+        tmp_path = await _write_to_tmp(file, filename)
+
+        metadata = _video_metadata(tmp_path)
+        gridfs_id = await gridfs_upload_file(db, tmp_path, filename, bucket_name="videos")
+
+        uploaded_video = VideoUpload(ownerId=data.owner_id,
+                                     filename=filename, 
+                                     gridfsFileId=gridfs_id,
+                                     sizeBytes=file.size, 
+                                     mimeType=file.content_type, 
+                                     durationSec=metadata['duration'],
+                                     fps=metadata['fps'],
+                                     resolution=metadata['resolution'],
+                                     codec=metadata['codec'])
+        
+        upload_res = await uploaded_video.insert()
+
+        if not isinstance(upload_res, VideoUpload):
+            raise RuntimeError("Beanie insert did not return a VideoUpload document")
+            
         return {
             "status": "OK",
             "uploaded_video": upload_res
@@ -126,25 +126,25 @@ async def video_parser_service(data: dict, db=None):
                     end: int | None = None
                     }
     """
-    from db.connection import connect_db, connect_client
+    from celery_app.tasks.videoOps_task import parse_video_task
     try:
-        filepath = await _download_from_gridfs(db, data.owner_id, data.filename)
-        parse_path = Path.joinpath(PARSED_TMP_DIR, filepath.stem)
-        extracted_frame, outpath = video_to_frames(video_path=filepath,
-                                                    output_dir=parse_path,
-                                                    start_sec=data.start,
-                                                    end_sec=data.end,
-                                                    frame_interval=data.frame_interval,
-                                                    compression=9)
-        return {
-            "status": "OK",
-            "file_name": filepath.name,
-            "frame_interval": data.frame_interval,
-            "start_sec": data.start,
-            "end_sec": data.end,
-            "extracted_frames": extracted_frame}
+    # .delay() is Celery shorthand for .apply_async() with positional args.
+    # It enqueues the task in RabbitMQ and returns immediately.
+        task = parse_video_task.delay(
+            owner_id=data.owner_id,
+            filename=data.filename,
+            frame_interval=data.frame_interval,
+            start_sec=data.start,
+            end_sec=data.end,
+        )
     except Exception as e:
         return e
+
+    return {
+        "task_id": task.id,
+        "status":  "queued",
+        "message": f"Parsing started for {data.filename}. Connect to the stream endpoint for progress.",
+    }
 
 async def get_video_service(data: dict):
     """
