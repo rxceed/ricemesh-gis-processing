@@ -17,18 +17,10 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Open the video using OpenCV
-    if video_path.exists():
-        cap = cv2.VideoCapture(video_path)
-    else:
-        vidPathStr = str(video_path)
-        pathSplit = vidPathStr.split(".")
-        if pathSplit[1] == "mp4":
-            newPath = Path(pathSplit[0]+".MP4")
-        elif pathSplit[1] == "MP4":
-            newPath = Path(pathSplit[0]+".mp4")
-        else:
-            raise Exception(f"Error: File is not in mp4 format")
-        cap = cv2.VideoCapture(newPath)
+    if not video_path.exists():
+        raise FileNotFoundError(f"Error: Video file not found at {video_path}")
+    
+    cap = cv2.VideoCapture(str(video_path))
 
     # Check if the video was opened successfully
     if not cap.isOpened():
@@ -42,7 +34,14 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
 
     # Convert seconds to specific frame numbers
     start_frame = int(start_sec * fps)
-    end_frame = int(end_sec * fps) if end_sec is not None else float('inf')
+    
+    # Get total video frames to handle None end_sec or out-of-bounds end_sec
+    video_total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if end_sec is not None:
+        end_frame = min(int(end_sec * fps), video_total_frames)
+    else:
+        end_frame = video_total_frames
+        
     # Jump directly to the starting frame (efficient seeking)
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     
@@ -69,23 +68,22 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
         current_frame += frame_interval
         saved_count += 1
         if on_progress is not None:
-            on_progress(saved_count, total_frames)   # ← only addition
+            on_progress(saved_count, total_frames)
         if save_to_db is not None:
-            save_to_db(frame, saved_count)
+            save_to_db(filepath, saved_count)
         cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
 
     cap.release()
     return saved_count, output_dir
 
-def main(input, start, end, interval, compression, resize):
+def main(input_val, start, end, interval, compression, resize):
     t_start = time.perf_counter()
-    if input:
-        input_path_str = str(args.input)
-        input_parent_path = Path(args.input).parent.resolve()
-        input_file_name = ((input_path_str.split("/"))[-1].split("."))[0]
-        output_path = Path.joinpath(input_parent_path, "parsed_"+input_file_name)
-        input_video = Path.joinpath(Path.cwd(), input_path_str).resolve()
-        output_folder = Path.joinpath(Path.cwd(), output_path).resolve()
+    if input_val:
+        input_path_str = str(input_val)
+        input_video = Path(input_path_str).resolve()
+        input_parent_path = input_video.parent
+        input_file_name = input_video.stem
+        output_folder = input_parent_path / f"parsed_{input_file_name}"
     else:
         print("No input path provided")
         return
@@ -104,14 +102,12 @@ if __name__ == "__main__":
     arg_parser.add_argument("--resize", type=str, help="resize the frames to the specified dimensions in WxH (e.g., 1920x1080)")
     args = arg_parser.parse_args()
 
-    start_time = 0
+    start_time = 0.0
     stop_time = None
-    interval = None
-    input_path_str = None
-    compression = None
+    interval = 1
+    compression = 0
+    resize_val = None
     
-    if args.input:
-        input_path_str = str(args.input)
     if args.start_sec:
         start_time = float(args.start_sec)
     if args.end_sec:
@@ -119,15 +115,8 @@ if __name__ == "__main__":
     if args.frame_interval:
         interval = int(args.frame_interval)
     if args.compression:
-        if int(args.compression) < 0:
-            compression = 0
-        elif int(args.compression) > 9:
-            compression = 9
-        else:
-            compression = int(args.compression)
+        compression = max(0, min(9, int(args.compression)))
     if args.resize:
-        resize = tuple(map(int, args.resize.split('x')))
-    else:
-        resize = None
+        resize_val = tuple(map(int, args.resize.split('x')))
 
-    main(input_path_str, start_time, stop_time, interval, compression, resize)
+    main(args.input, start_time, stop_time, interval, compression, resize_val)

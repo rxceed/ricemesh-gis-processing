@@ -1,5 +1,6 @@
 import re
 import math
+from pathlib import Path
 
 def dms_to_decimal(dms_str):
     """
@@ -43,3 +44,31 @@ def create_bounding_box(center_lat, center_lon, area_ha):
     
     return [center_lon - delta_lon, center_lat - delta_lat, 
             center_lon + delta_lon, center_lat + delta_lat]
+
+def read_video_metadata(file_path: Path) -> dict:
+    """
+    Extract fps, duration, codec, and resolution from a video file on disk.
+    Raises RuntimeError if the file has no video track or cannot be parsed.
+    """
+    from pymediainfo import MediaInfo
+    
+
+    info = MediaInfo.parse(file_path)
+    if not info or not info.tracks:
+        raise RuntimeError(f"MediaInfo returned no tracks for {file_path}")
+
+    video_track = next(
+        (t for t in info.tracks if t.track_type == "Video"), None
+    )
+    if not video_track:
+        raise RuntimeError(f"No video track found in {file_path}")
+
+    return {
+        "fps":        float(video_track.frame_rate or 0),
+        "duration":   float(video_track.duration or 0) / 1000,
+        "codec":      video_track.format or "unknown",
+        "resolution": {
+            "width":  int(video_track.width or 0),
+            "height": int(video_track.height or 0),
+        },
+    }

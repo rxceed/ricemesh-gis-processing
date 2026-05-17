@@ -2,9 +2,10 @@ from typing import Optional, List
 from beanie import Document, Indexed
 from pydantic import BaseModel, Field
 from pymongo import IndexModel, ASCENDING
+from pydantic_mongo import PydanticObjectId
 
 class frames(BaseModel):
-    image_data: bytes = Field(..., alias="imageData")
+    gridfs_file_id: PydanticObjectId = Field(..., alias="gridfsFileId")
     frame_index: int = Field(..., alias="frameIndex")
 
 class ParsedImage(Document):

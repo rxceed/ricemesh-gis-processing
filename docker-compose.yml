@@ -44,32 +44,28 @@ services:
       - ricemesh_net
     profiles:
       - dev  # only starts with `docker compose --profile dev up`
-  
-  # Add to existing services block
 
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    container_name: ricemesh_rabbitmq
+  redis:
+    image: redis:7.2-alpine
+    container_name: ricemesh_redis
     restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
     ports:
-      - "5672:5672"    # AMQP — Celery connects here
-      - "15672:15672"  # Management UI — useful during development
+      - "6379:6379"
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - redis_data:/data
     networks:
       - ricemesh_net
+    # Persist to disk every 60s if at least 1 key changed.
+    # --loglevel warning keeps logs clean in dev.
+    command: redis-server --save 60 1 --loglevel warning
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
       retries: 5
 
-# Add to the volumes block at the bottom
 volumes:
-  rabbitmq_data:
+  redis_data:
 
 networks:
   ricemesh_net:

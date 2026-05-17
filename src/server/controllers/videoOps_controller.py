@@ -1,136 +1,156 @@
-from server.schemas.videoOps_schema import videoOpsParse, videoOpsBase
-from server.services.videoOps_service import get_video_service, video_parser_service, video_upload_service
-
-from fastapi import File, UploadFile, HTTPException, status, Request
-
+# src/server/controllers/videoOps_controller.py
 import asyncio
 import json
-from celery.result import AsyncResult
-from celery_app.app import celery_app
+
+from arq.jobs import Job, JobStatus
+from fastapi import File, UploadFile, HTTPException, status, Request
+
+from server.schemas.videoOps_schema import videoOpsParse, videoOpsBase, videoOpsWebodmTask
+from server.services.videoOps_service import (
+    get_video_service,
+    video_parser_service,
+    video_upload_service,
+    video_webodm_service,
+    video_delete_service,
+    parsed_image_delete_service
+)
+
+
+# ── Existing handlers (unchanged logic, redis thread through) ─────────────
 
 async def video_upload(req: Request, ctx: videoOpsBase, file: UploadFile = File(...)):
     try:
-        filename = file.filename
-        file_format = filename.split(".")[1]
-        if not(file_format == "mp4" or file_format == "MP4"):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Video format and extension must be in .mp4 or .MP4")
-        res = await video_upload_service(ctx, file, db=req.state.db)
-        if isinstance(res, Exception):
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error occured during video upload: {res}")
-        return res
+        # Fast extension check (case-insensitive for the user)
+        if not file.filename.lower().endswith((".mp4",)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only .mp4 files are accepted",
+            )
+        
+        # Service handles magic number validation and extension normalization
+        return await video_upload_service(ctx, file, redis=req.state.redis)
+        
+    except ValueError as e:
+        # Catch validation errors from the service
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error occured: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 async def video_parser(req: Request, ctx: videoOpsParse):
     try:
-        res = await video_parser_service(ctx, db=req.state.db)
-        if isinstance(res, Exception):
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error occured in response: {res}")
-        return res
+        return await video_parser_service(ctx, redis=req.state.redis)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error occured: {e}")
-    
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 async def get_video(req: Request, ctx: videoOpsBase):
     try:
-        res = await get_video_service(ctx)
-        if isinstance(res, Exception):
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error occured: {res}")
-        return res
+        return await get_video_service(ctx)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error occured: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-async def _poll_task_state(task_id: str) -> tuple[str, dict | None]:
+
+async def video_webodm(req: Request, ctx: videoOpsWebodmTask):
+    try:
+        return await video_webodm_service(ctx, redis=req.state.redis)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def video_delete(req: Request, video_id: str, owner_id: int):
+    try:
+        return await video_delete_service(video_id, owner_id, db=req.app.state.db)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def parsed_image_delete(req: Request, parsed_id: str, owner_id: int):
+    try:
+        return await parsed_image_delete_service(parsed_id, owner_id, db=req.app.state.db)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── New: job status + SSE stream ──────────────────────────────────────────
+
+async def get_job_status(job_id: str, redis) -> dict:
     """
-    Fetch Celery task state without blocking the event loop.
-
-    AsyncResult.state and .info hit MongoDB synchronously. Running them
-    in the default ThreadPoolExecutor moves that blocking call off the
-    event loop thread, keeping FastAPI responsive to other requests
-    while we wait for the DB round-trip.
+    Snapshot of a job's current state. For clients that prefer polling
+    over a persistent SSE connection.
     """
-    loop   = asyncio.get_event_loop()
-    result = AsyncResult(task_id, app=celery_app)
+    job    = Job(job_id, redis)
+    status_val = await job.status()
 
-    state = await loop.run_in_executor(None, lambda: result.state)
-    info  = await loop.run_in_executor(None, lambda: result.info)
+    payload: dict = {"job_id": job_id, "status": status_val.value}
 
-    return state, info
+    # Merge in the detailed progress blob if it exists
+    raw = await redis.get(f"job_progress:{job_id}")
+    if raw:
+        payload.update(json.loads(raw))
 
-
-async def get_task_status(task_id: str) -> dict:
-    """
-    Snapshot of current task state. Used for polling clients.
-    GET /api/video-ops/tasks/{task_id}
-    """
-    state, info = await _poll_task_state(task_id)
-
-    payload = {"task_id": task_id, "state": state}
-
-    if state == "PROGRESS":
-        payload.update(info or {})
-    elif state == "SUCCESS":
-        payload["result"] = info
-    elif state == "FAILURE":
-        # info is the exception instance when state is FAILURE
-        payload["error"] = str(info)
+    # For completed jobs, attach the final result or error
+    if status_val == JobStatus.complete:
+        try:
+            payload["result"] = await job.result(timeout=1)
+        except Exception as exc:
+            payload["error"] = str(exc)
 
     return payload
 
 
-async def task_event_stream(task_id: str):
+async def job_event_stream(job_id: str, redis):
     """
-    SSE generator for a Celery task.
-    GET /api/video-ops/tasks/{task_id}/stream
+    Async generator for the SSE endpoint.
 
-    Yields SSE-formatted strings every second until the task reaches
-    a terminal state (SUCCESS or FAILURE) or a timeout is exceeded.
+    Yields one JSON event per second. Exits when the job reaches a
+    terminal state (complete) or the 2-hour timeout is hit.
 
-    SSE wire format:
-        data: {"task_id": "...", "state": "PROGRESS", ...}\n\n
-
-    Why poll instead of Celery signals?
-      Celery's task_success / task_failure signals fire inside the
-      worker process — a different OS process from FastAPI. Bridging
-      signals across processes requires a shared pub/sub channel
-      (Redis Pub/Sub, RabbitMQ exchanges). We already poll MongoDB
-      for AsyncResult.state, so polling every second is simpler and
-      adds no new infrastructure. For 1-second granularity it's fine.
+    SSE format:
+        data: {"job_id": "...", "status": "in_progress", ...}\n\n
     """
-    POLL_INTERVAL_SEC = 1.0
-    TIMEOUT_SEC       = 7_200  # 2 hours — enough for any realistic video
+    POLL_INTERVAL = 1.0
+    TIMEOUT_SEC   = 7_200
 
     elapsed = 0.0
 
     while elapsed < TIMEOUT_SEC:
-        state, info = await _poll_task_state(task_id)
+        job        = Job(job_id, redis)
+        status_val = await job.status()
 
-        payload: dict = {"task_id": task_id, "state": state}
+        payload: dict = {"job_id": job_id, "status": status_val.value}
 
-        if state == "PENDING":
-            payload["message"] = "Task is queued, waiting for a worker"
+        # Merge detailed progress (stage, percent, message, etc.)
+        raw = await redis.get(f"job_progress:{job_id}")
+        if raw:
+            payload.update(json.loads(raw))
 
-        elif state == "STARTED":
-            payload["message"] = "Worker picked up the task"
-
-        elif state == "PROGRESS":
-            # info is the meta dict passed to update_state()
-            payload.update(info or {})
-
-        elif state == "SUCCESS":
-            payload["result"] = info
-            # Terminal state — yield final event and close the stream
+        if status_val == JobStatus.complete:
+            try:
+                payload["result"]  = await job.result(timeout=1)
+                payload["success"] = True
+            except Exception as exc:
+                payload["error"]   = str(exc)
+                payload["success"] = False
             yield f"data: {json.dumps(payload)}\n\n"
-            return
+            return  # terminal — close the stream
 
-        elif state == "FAILURE":
-            payload["error"] = str(info)
+        if status_val == JobStatus.not_found:
+            payload["error"] = "Job not found or result expired"
             yield f"data: {json.dumps(payload)}\n\n"
             return
 
         yield f"data: {json.dumps(payload)}\n\n"
+        await asyncio.sleep(POLL_INTERVAL)
+        elapsed += POLL_INTERVAL
 
-        await asyncio.sleep(POLL_INTERVAL_SEC)
-        elapsed += POLL_INTERVAL_SEC
-
-    # Timed out without reaching a terminal state
-    yield f'data: {json.dumps({"task_id": task_id, "state": "TIMEOUT", "message": "Stream timed out"})}\n\n'
+    yield f'data: {json.dumps({"job_id": job_id, "status": "timeout"})}\n\n'

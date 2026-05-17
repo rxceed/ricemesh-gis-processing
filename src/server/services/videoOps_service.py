@@ -1,161 +1,158 @@
-from modules.parsevid import video_to_frames
-from dotenv import load_dotenv
-from fastapi import File, UploadFile
+# src/server/services/videoOps_service.py
 from pathlib import Path
-from db.gridfs_ops import gridfs_download_file, gridfs_upload_file
-from db.models import VideoUpload
-import asyncio, os, shutil
+from fastapi import File, UploadFile
+from dotenv import load_dotenv
+import os
+from bson import ObjectId
+
+from db.models import VideoUpload, ParsedImage
+from db.gridfs_ops import gridfs_delete_file
 
 load_dotenv()
 
-parsed_tmp_dir_env = os.getenv("PARSE_TMP")
-PARSED_TMP_DIR = Path.joinpath(Path.cwd(), parsed_tmp_dir_env)
-TMP_DIR = PARSED_TMP_DIR.parent
-upload_tmp_dir_env = os.getenv("UPLOAD_TMP")
-UPLOAD_TMP_DIR = Path.joinpath(Path.cwd(), upload_tmp_dir_env)
+BASE_DIR       = Path(__file__).resolve().parents[2]
+PARSED_TMP_DIR = BASE_DIR / os.getenv("PARSE_TMP", "tmp/parsed")
+TMP_DIR        = BASE_DIR / os.getenv("UPLOAD_TMP", "tmp/uploads").split("/")[0]
+UPLOAD_TMP_DIR = BASE_DIR / os.getenv("UPLOAD_TMP")
 
-def _video_metadata(file_path: Path):
-    try:
-        from pymediainfo import MediaInfo
-        media_info = MediaInfo.parse(file_path)
-        if not media_info or not media_info.tracks:
-            raise Exception("Unable to parse media info")
-        # Locate the video track (usually the first one)
-        video_track = next((t for t in media_info.tracks if t.track_type == 'Video'), None)
-        if not video_track:
-            raise Exception("No video track found")
-        # 1. Extract Framerate
-        # Returns a string or float (e.g., "23.976")
-        fps = video_track.frame_rate
-        # 2. Extract Duration
-        # MediaInfo returns duration in milliseconds
-        duration_ms = video_track.duration
-        duration_sec = float(duration_ms) / 1000 if duration_ms else 0
-        # 3. Extract Codec
-        # 'format' is the short name (e.g., AVC, HEVC), 
-        # 'codec_id' is the specific FourCC (e.g., avc1)
-        codec = video_track.format 
-        codec_id = video_track.codec_id
-        # 4. Extract Resolution
-        width = video_track.width
-        height = video_track.height
-        # Extract metadata
-        metadata: dict = {
-            "fps": fps,
-            "duration": duration_sec,
-            "codec": codec,
-            "resolution": {"width": width, "height": height}
-        }
-        if not all(metadata.values()):
-            raise Exception("Incomplete metadata extracted")
-        return metadata
-    except Exception as e:
-        return e
 
-async def _write_to_tmp(file: UploadFile, filename: str):
-    try:
-        CHUNK = 4096 * 1024
-        file_path = Path.joinpath(UPLOAD_TMP_DIR, filename)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        await file.seek(0)
-        with open(file_path, "wb") as buffer:
-            while True:
-                chunk = await file.read(CHUNK)
-                if not chunk:
-                    break
-                buffer.write(chunk)
-        return file_path
-    except Exception as e:
-        return e
-
-async def video_upload_service(data: dict, file: UploadFile=File(...), db=None):
+async def _save_upload_to_disk(file: UploadFile, dest: Path) -> None:
     """
-    Args:
-        data: dict{owner_id: int}
-        file: uploaded file
-        db: database connection
+    Stream an UploadFile to disk in 1 MB chunks.
+    Seeks to 0 first in case FastAPI partially consumed the stream
+    during request validation.
     """
-    from src.db.connection_beanie import connect_db, connect_client
-    try:
-        filename = file.filename
-        tmp_path = await _write_to_tmp(file, filename)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    await file.seek(0)
+    with open(dest, "wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            f.write(chunk)
 
-        metadata = _video_metadata(tmp_path)
-        gridfs_id = await gridfs_upload_file(db, tmp_path, filename, bucket_name="videos")
 
-        uploaded_video = VideoUpload(ownerId=data.owner_id,
-                                     filename=filename, 
-                                     gridfsFileId=gridfs_id,
-                                     sizeBytes=file.size, 
-                                     mimeType=file.content_type, 
-                                     durationSec=metadata['duration'],
-                                     fps=metadata['fps'],
-                                     resolution=metadata['resolution'],
-                                     codec=metadata['codec'])
+async def _validate_mp4_magic(file: UploadFile) -> bool:
+    """
+    Check the file signature (magic numbers) to ensure it's a valid
+    ISO base media file (MP4). We check the first 12 bytes for 'ftyp'.
+    """
+    await file.seek(0)
+    header = await file.read(12)
+    await file.seek(0)
+    
+    if len(header) < 12:
+        return False
         
-        upload_res = await uploaded_video.insert()
+    # Standard MP4 files have 'ftyp' at offset 4
+    return header[4:8] == b"ftyp"
 
-        if not isinstance(upload_res, VideoUpload):
-            raise RuntimeError("Beanie insert did not return a VideoUpload document")
-            
-        return {
-            "status": "OK",
-            "uploaded_video": upload_res
-            }
-    except Exception as e:
-        return e
 
-async def _download_from_gridfs(db, owner_id: int, filename: str):
-    file_path = Path.joinpath(TMP_DIR, f"downloads/{filename}")
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    if file_path.exists():
-        return file_path
-    else:
-        video_upload = await VideoUpload.find_one({"ownerId": owner_id, "filename": filename})
-        if not video_upload:
-            raise Exception("File not found")
-        await gridfs_download_file(db, video_upload.gridfs_file_id, file_path, bucket_name="videos")
-    return file_path
-
-async def video_parser_service(data: dict, db=None):
+async def video_upload_service(
+    data: dict,
+    file: UploadFile = File(...),
+    redis=None,
+) -> dict:
     """
-    Args:
-        data: dict{owner_id: int,
-                    frame_interval: int=1,
-                    start: int=1,
-                    end: int | None = None
-                    }
+    Save the uploaded file to disk, enqueue the upload task, and return
+    immediately with a job_id.
+
+    Why save to disk before enqueuing?
+      UploadFile.file is a SpooledTemporaryFile tied to the HTTP request.
+      Once the request handler returns, the file object is gone. The Arq
+      worker runs in a separate process and cannot access it. Writing to
+      a named temp file gives the worker a stable path to read from.
     """
-    from celery_app.tasks.videoOps_task import parse_video_task
-    try:
-    # .delay() is Celery shorthand for .apply_async() with positional args.
-    # It enqueues the task in RabbitMQ and returns immediately.
-        task = parse_video_task.delay(
-            owner_id=data.owner_id,
-            filename=data.filename,
-            frame_interval=data.frame_interval,
-            start_sec=data.start,
-            end_sec=data.end,
-        )
-    except Exception as e:
-        return e
+    # ── Security: Magic Number Check ──────────────────────────────────────
+    if not await _validate_mp4_magic(file):
+        raise ValueError("Invalid file format: Not a genuine MP4 video.")
+
+    # ── Normalize Extension to lower case .mp4 ────────────────────────────
+    filename_path = Path(file.filename)
+    if filename_path.suffix.lower() != ".mp4":
+        raise ValueError("Invalid file extension: Only .mp4 is supported.")
+    
+    normalized_filename = filename_path.with_suffix(".mp4").name
+    tmp_path = UPLOAD_TMP_DIR / normalized_filename
+    await _save_upload_to_disk(file, tmp_path)
+
+    job = await redis.enqueue_job(
+        "upload_video",
+        owner_id=data.owner_id,
+        tmp_path=str(tmp_path),
+        filename=normalized_filename,
+        content_type="video/mp4",
+        file_size=file.size,
+    )
 
     return {
-        "task_id": task.id,
+        "job_id":  job.job_id,
         "status":  "queued",
-        "message": f"Parsing started for {data.filename}. Connect to the stream endpoint for progress.",
+        "message": f"{normalized_filename} queued for upload.",
     }
 
-async def get_video_service(data: dict):
+
+async def video_parser_service(data: dict, redis=None) -> dict:
     """
-    Args:
-        data: dict{owner_id: int}
+    Enqueue a parse job and return immediately with a job_id.
+    The worker downloads the video from GridFS, extracts frames, and
+    reports progress via Redis.
     """
+    job = await redis.enqueue_job(
+        "parse_video",
+        owner_id=data.owner_id,
+        filename=data.filename,
+        frame_interval=data.frame_interval,
+        start_sec=data.start,
+        end_sec=data.end,
+    )
+
+    return {
+        "job_id":  job.job_id,
+        "status":  "queued",
+        "message": f"Parsing queued for {data.filename}.",
+    }
+
+
+async def get_video_service(data: dict) -> dict:
     try:
-        uploaded_videos = await VideoUpload.find({"ownerId": data.owner_id}).to_list()
-        return {
-            "status": "OK",
-            "videos": uploaded_videos
-        }
+        videos = await VideoUpload.find({"ownerId": data.owner_id}).to_list()
+        return {"status": "OK", "videos": videos}
     except Exception as e:
         return e
+
+async def video_webodm_service(data: dict, redis=None) -> dict:
+    """
+    Enqueue a WebODM processing job and return immediately with a job_id.
+    """
+    job = await redis.enqueue_job(
+        "process_webodm_video",
+        owner_id=data.owner_id,
+        filename=data.filename,
+        project_name=data.project_name,
+        task_name=data.task_name,
+        options=data.options,
+    )
+
+    return {
+        "job_id":  job.job_id,
+        "status":  "queued",
+        "message": f"WebODM processing queued for {data.filename} in project {data.project_name}.",
+    }
+
+async def video_delete_service(video_id: str, owner_id: int, db) -> dict:
+    video = await VideoUpload.find_one({"_id": ObjectId(video_id), "ownerId": owner_id})
+    if not video:
+        raise ValueError("Video not found or unauthorized")
+    
+    await gridfs_delete_file(db, video.gridfs_file_id, bucket_name="videos")
+    await video.delete()
+    return {"status": "OK", "message": f"Video {video_id} deleted"}
+
+async def parsed_image_delete_service(parsed_id: str, owner_id: int, db) -> dict:
+    parsed = await ParsedImage.find_one({"_id": ObjectId(parsed_id), "ownerId": owner_id})
+    if not parsed:
+        raise ValueError("Parsed image not found or unauthorized")
+    
+    for frame in parsed.image_frames:
+        await gridfs_delete_file(db, frame.gridfs_file_id, bucket_name="parsed_frames")
+    
+    await parsed.delete()
+    return {"status": "OK", "message": f"Parsed image {parsed_id} deleted"}

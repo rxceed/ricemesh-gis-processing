@@ -6,12 +6,10 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "argparse>=1.4.0",
+    "arq>=0.28.0",
     "beanie>=2.1.0",
-    "bunnet>=1.1.0",
-    "celery[mongodb]>=5.6.3",
     "fastapi>=0.136.1",
     "imageio>=2.37.3",
-    "kombu>=5.6.2",
     "matplotlib>=3.10.8",
     "motor>=3.7.1",
     "odc-stac[botocore]>=0.5.2",
