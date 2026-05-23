@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 from server.routers.videoOps_route import videoOps_router
 from server.routers.webodm_route import webodm_router
+from server.routers.floyd_warshall_route import floyd_warshall_router
 import db.connection as conn
 from arq import create_pool
 from arq.connections import RedisSettings
@@ -70,6 +71,7 @@ async def add_state_middleware(request: Request, call_next):
 
 gisProc.include_router(videoOps_router)
 gisProc.include_router(webodm_router)
+gisProc.include_router(floyd_warshall_router)
 
 @gisProc.get("/", tags=["Health Check"])
 async def root():

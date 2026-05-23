@@ -5,7 +5,13 @@ import json
 from arq.jobs import Job, JobStatus
 from fastapi import File, UploadFile, HTTPException, status, Request
 
-from server.schemas.videoOps_schema import videoOpsParse, videoOpsBase, videoOpsWebodmTask
+from server.schemas.videoOps_schema import (
+    videoOpsParse as _videoOpsParse, 
+    videoOpsBase as _videoOpsBase, 
+    videoOpsWebodmTask as _videoOpsWebodmTask, 
+    videoOpsResponseBase as _videoOpsResponseBase, 
+    videoOpsArqWorkerResponse as _videoOpsArqWorkerResponse,
+    videoOpsGetVidResponse as _videoOpsGetVidResponse)
 from server.services.videoOps_service import (
     get_video_service,
     video_parser_service,
@@ -18,7 +24,7 @@ from server.services.videoOps_service import (
 
 # ── Existing handlers (unchanged logic, redis thread through) ─────────────
 
-async def video_upload(req: Request, ctx: videoOpsBase, file: UploadFile = File(...)):
+async def video_upload(req: Request, ctx: _videoOpsBase, file: UploadFile = File(...)):
     try:
         # Fast extension check (case-insensitive for the user)
         if not file.filename.lower().endswith((".mp4",)):
@@ -28,7 +34,10 @@ async def video_upload(req: Request, ctx: videoOpsBase, file: UploadFile = File(
             )
         
         # Service handles magic number validation and extension normalization
-        return await video_upload_service(ctx, file, redis=req.state.redis)
+        res = await video_upload_service(ctx, file, redis=req.state.redis)
+        return _videoOpsArqWorkerResponse(job_id=res["job_id"],
+                                            status=res["status"],
+                                            message=res["message"])
         
     except ValueError as e:
         # Catch validation errors from the service
@@ -42,30 +51,38 @@ async def video_upload(req: Request, ctx: videoOpsBase, file: UploadFile = File(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def video_parser(req: Request, ctx: videoOpsParse):
+async def video_parser(req: Request, ctx: _videoOpsParse):
     try:
-        return await video_parser_service(ctx, redis=req.state.redis)
+        res = await video_parser_service(ctx, redis=req.state.redis)
+        return _videoOpsArqWorkerResponse(job_id=res["job_id"],
+                                            status=res["status"],
+                                            message=res["message"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def get_video(req: Request, ctx: videoOpsBase):
+async def get_video(req: Request, ctx: _videoOpsBase):
     try:
-        return await get_video_service(ctx)
+        res = await get_video_service(ctx)
+        return _videoOpsGetVidResponse(status=res["status"], video=res["video"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def video_webodm(req: Request, ctx: videoOpsWebodmTask):
+async def video_webodm(req: Request, ctx: _videoOpsWebodmTask):
     try:
-        return await video_webodm_service(ctx, redis=req.state.redis)
+        res = await video_webodm_service(ctx, redis=req.state.redis)
+        return _videoOpsArqWorkerResponse(job_id=res["job_id"],
+                                            status=res["status"],
+                                            message=res["message"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 async def video_delete(req: Request, video_id: str, owner_id: int):
     try:
-        return await video_delete_service(video_id, owner_id, db=req.app.state.db)
+        res = await video_delete_service(video_id, owner_id, db=req.app.state.db)
+        return _videoOpsResponseBase(status=res["status"], message=res["message"])
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
@@ -74,7 +91,8 @@ async def video_delete(req: Request, video_id: str, owner_id: int):
 
 async def parsed_image_delete(req: Request, parsed_id: str, owner_id: int):
     try:
-        return await parsed_image_delete_service(parsed_id, owner_id, db=req.app.state.db)
+        res = await parsed_image_delete_service(parsed_id, owner_id, db=req.app.state.db)
+        return _videoOpsResponseBase(status=res["status"], message=res["message"])
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:

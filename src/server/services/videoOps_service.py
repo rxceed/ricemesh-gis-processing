@@ -15,7 +15,6 @@ PARSED_TMP_DIR = BASE_DIR / os.getenv("PARSE_TMP", "tmp/parsed")
 TMP_DIR        = BASE_DIR / os.getenv("UPLOAD_TMP", "tmp/uploads").split("/")[0]
 UPLOAD_TMP_DIR = BASE_DIR / os.getenv("UPLOAD_TMP")
 
-
 async def _save_upload_to_disk(file: UploadFile, dest: Path) -> None:
     """
     Stream an UploadFile to disk in 1 MB chunks.

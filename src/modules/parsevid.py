@@ -1,6 +1,6 @@
 import cv2
 from pathlib import Path
-from argparse import ArgumentParser
+from argparse import ArgumentParser as _ArgumentParser
 import time
 
 def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, end_sec:float=None, frame_interval:int=1, compression:int=0, resize: tuple=None, on_progress=None, save_to_db=None) -> tuple[int, Path]:
@@ -93,7 +93,7 @@ def main(input_val, start, end, interval, compression, resize):
 
 # --- Example Usage ---
 if __name__ == "__main__":
-    arg_parser = ArgumentParser()
+    arg_parser = _ArgumentParser()
     arg_parser.add_argument("input", type=str, help="file path to input video relative to working directory")
     arg_parser.add_argument("-s", "--start-sec", type=float, help="starting point of the video that want to be parsed in seconds")
     arg_parser.add_argument("-e","--end-sec", type=float, help="ending point of the video that want to be parsed in seconds")

@@ -4,8 +4,6 @@ import rasterio
 from rasterio.windows import Window
 from samgeo.common import raster_to_vector
 
-from .vari_prep import preprocess_vari_geotiff
-
 # ── Model factory ─────────────────────────────────────────────────────────
 
 def load_fastsam(
@@ -271,70 +269,3 @@ def segment_orthophoto_fastsam_rgb(
         iou           = iou,
         output_stem   = orthophoto_path.stem,
     )
-
-
-def segment_orthophoto_fastsam_vari(
-    orthophoto_path: Path,
-    output_dir: Path,
-    tile_size: int = 1024,
-    overlap: int = 128,
-    min_area_m2: float = 100.0,
-    max_area_m2: float | None = None,
-    model_variant: str = "FastSAM-s.pt",
-    conf: float = 0.35,
-    iou: float = 0.9,
-    band_indices: dict[str, int] | None = None,
-) -> tuple[Path, Path]:
-    """
-    Compute VARI from RGB, then segment the colorized VARI image.
-
-    Why VARI preprocessing helps FastSAM
-    ─────────────────────────────────────
-    Raw RGB: rice, grass, trees, and shrubs all share similar green hues.
-             FastSAM sees them as one continuous textured region.
-    VARI colorized:
-      Rice plots  (VARI 0.2–0.5)  → bright saturated green
-      Bunds/roads (VARI ~0.0)     → yellow-orange
-      Water channels (VARI < 0)   → red
-    The colour step-changes at object boundaries give FastSAM clear
-    edges to segment against, regardless of the semantic content.
-
-    conf = 0.35 (lower than RGB default)
-    VARI imagery is not in FastSAM's training distribution (it was
-    trained on natural photos).  A slightly lower threshold compensates
-    for reduced detector confidence on this out-of-distribution input.
-    Raise to 0.45 if non-plot objects (buildings, trees) are over-retained.
-
-    Intermediate VARI GeoTIFF is written to output_dir and deleted on success.
-    """
-    if band_indices is None:
-        band_indices = {"red": 0, "green": 1, "blue": 2}
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Step 1: build a georeferenced VARI visualisation GeoTIFF
-    vari_tif = output_dir / f"{orthophoto_path.stem}_vari_viz.tif"
-    preprocess_vari_geotiff(orthophoto_path, vari_tif, band_indices)
-
-    # Step 2: run FastSAM on the colourized image;
-    #         georeference comes from the original orthophoto
-    model, device = load_fastsam(model_variant)
-    mask_path, vector_path = _segment_tif_with_fastsam(
-        source_tif    = vari_tif,
-        reference_tif = orthophoto_path,
-        output_dir    = output_dir,
-        model         = model,
-        device        = device,
-        tile_size     = tile_size,
-        overlap       = overlap,
-        min_area_m2   = min_area_m2,
-        max_area_m2   = max_area_m2,
-        conf          = conf,
-        iou           = iou,
-        output_stem   = orthophoto_path.stem,
-    )
-
-    # Step 3: clean up
-    #vari_tif.unlink(missing_ok=True)
-
-    return mask_path, vector_path

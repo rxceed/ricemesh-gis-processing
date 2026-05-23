@@ -3,7 +3,13 @@ from fastapi import APIRouter, File, UploadFile, Request, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Annotated
 
-from server.schemas.videoOps_schema import videoOpsBase, videoOpsParse, videoOpsWebodmTask
+from server.schemas.videoOps_schema import (
+    videoOpsParse as _videoOpsParse, 
+    videoOpsBase as _videoOpsBase, 
+    videoOpsWebodmTask as _videoOpsWebodmTask, 
+    videoOpsResponseBase as _videoOpsResponseBase, 
+    videoOpsArqWorkerResponse as _videoOpsArqWorkerResponse,
+    videoOpsGetVidResponse as _videoOpsGetVidResponse)
 from server.controllers.videoOps_controller import (
     video_upload      as _video_upload,
     video_parser      as _video_parser,
@@ -18,10 +24,10 @@ from server.controllers.videoOps_controller import (
 videoOps_router = APIRouter(prefix="/api/video-ops", tags=["Video Operations"])
 
 
-@videoOps_router.post("/upload", status_code=202)
+@videoOps_router.post("/upload", status_code=202, response_model=_videoOpsArqWorkerResponse)
 async def upload(
     req: Request,
-    upload: Annotated[videoOpsBase, Depends()],
+    upload: _videoOpsBase,
     file: UploadFile = File(...),
 ):
     """
@@ -31,8 +37,8 @@ async def upload(
     return await _video_upload(req=req, ctx=upload, file=file)
 
 
-@videoOps_router.post("/parse", status_code=202)
-async def parse(req: Request, parse: Annotated[videoOpsParse, Depends()]):
+@videoOps_router.post("/parse", status_code=202, response_model=_videoOpsArqWorkerResponse)
+async def parse(req: Request, parse: _videoOpsParse):
     """
     Enqueue frame extraction task.
     Returns 202 immediately with a job_id to track progress.
@@ -40,8 +46,8 @@ async def parse(req: Request, parse: Annotated[videoOpsParse, Depends()]):
     return await _video_parser(req=req, ctx=parse)
 
 
-@videoOps_router.post("/webodm", status_code=202)
-async def webodm(req: Request, webodm: Annotated[videoOpsWebodmTask, Depends()]):
+@videoOps_router.post("/webodm", status_code=202, response_model=_videoOpsArqWorkerResponse)
+async def webodm(req: Request, webodm: _videoOpsWebodmTask):
     """
     Enqueue WebODM processing task.
     Returns 202 immediately with a job_id to track progress.
@@ -49,7 +55,7 @@ async def webodm(req: Request, webodm: Annotated[videoOpsWebodmTask, Depends()])
     return await _video_webodm(req=req, ctx=webodm)
 
 
-@videoOps_router.get("/jobs/{job_id}")
+@videoOps_router.get("/jobs/{job_id}", status_code=200)
 async def job_status(job_id: str, req: Request):
     """
     Polling endpoint — current snapshot of a job's state and progress.
@@ -57,7 +63,7 @@ async def job_status(job_id: str, req: Request):
     return await _get_job_status(job_id, req.state.redis)
 
 
-@videoOps_router.get("/jobs/{job_id}/stream")
+@videoOps_router.get("/jobs/{job_id}/stream", status_code=200)
 async def job_stream(job_id: str, req: Request):
     """
     Server-Sent Events stream — pushes progress events every second
@@ -78,16 +84,16 @@ async def job_stream(job_id: str, req: Request):
     )
 
 
-@videoOps_router.post("/get", status_code=200)
-async def get(req: Request, get: Annotated[videoOpsBase, Depends()]):
+@videoOps_router.post("/get", status_code=200, response_model=_videoOpsGetVidResponse)
+async def get(req: Request, get: Annotated[_videoOpsBase, Depends()]):
     return await _get_video(req=req, ctx=get)
 
 
-@videoOps_router.delete("/videos/{video_id}")
+@videoOps_router.delete("/videos/{video_id}", status_code=200, response_model=_videoOpsResponseBase)
 async def delete_video(req: Request, video_id: str, owner_id: int):
     return await _video_delete(req=req, video_id=video_id, owner_id=owner_id)
 
 
-@videoOps_router.delete("/parsed/{parsed_id}")
+@videoOps_router.delete("/parsed/{parsed_id}", status_code=200, response_model=_videoOpsResponseBase)
 async def delete_parsed_image(req: Request, parsed_id: str, owner_id: int):
     return await _parsed_image_delete(req=req, parsed_id=parsed_id, owner_id=owner_id)

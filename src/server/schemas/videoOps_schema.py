@@ -1,8 +1,9 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
+from db.models.video_upload import VideoUpload
 
 class videoOpsBase(BaseModel):
-    owner_id: int
+    owner_id: int = Field(..., description="User ID of the video owner")
 
 class videoOpsParse(videoOpsBase):
     filename: str
@@ -15,3 +16,13 @@ class videoOpsWebodmTask(videoOpsBase):
     project_name: str
     task_name: Optional[str] = None
     options: Optional[List[dict]] = None
+
+class videoOpsResponseBase(BaseModel):
+    status: str
+    message: Optional[str]
+
+class videoOpsArqWorkerResponse(videoOpsResponseBase):
+    job_id: str
+
+class videoOpsGetVidResponse(videoOpsResponseBase):
+    video: List[VideoUpload]
