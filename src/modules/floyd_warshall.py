@@ -5,6 +5,31 @@ from argparse import ArgumentParser as _ArgumentParser
 # Sentinel value representing no direct edge between two nodes
 _INF = math.inf
 
+def calculate_weight(source: dict, dest: dict, distance):
+    """
+    Calculate weight of the node
+
+    Parameters
+    ----------
+    source      : dictionary containing property of the source plot {area, water_height, optimal_heigth, elevation}
+    dest        : dictionary containing property of the destination {area, water_height, optimal_heigth, elevation}
+    distance    : euclidean distance of the two centroids
+    Returns
+    -------
+    dist : num_nodes × num_nodes distance matrix
+    """
+    v_source = source["area"]*source["water_height"]
+    v_deficit_dest = dest["area"]*max(0, dest["water_height"]-dest["optimal_height"])
+    e = 1
+    source_cost = 1/(v_source+e)
+    dest_cost = 1/(v_deficit_dest+e)
+    delta_elevation = dest["elevation"]-source["elevation"]
+    if delta_elevation <= 0:
+        E_ij = 1
+    else:
+        E_ij = 100*delta_elevation
+    weight = (distance*E_ij)*(source_cost*(source_cost/dest_cost+source_cost)+dest_cost*(dest_cost/source_cost+dest_cost))
+    return weight
 
 def build_distance_matrix(
     num_nodes: int,
@@ -46,6 +71,46 @@ def build_distance_matrix(
             dist[v][u] = min(dist[v][u], weight)
 
     return dist
+
+
+def build_distance_matrix_from_node_data(
+    num_nodes: int,
+    nodes: list[dict],
+    node_edges: list[tuple[int, int, float]],
+    directed: bool = True,
+) -> list[list[float]]:
+    """
+    Build an initial distance matrix by computing edge weights from node properties.
+
+    Parameters
+    ----------
+    num_nodes  : total number of nodes (0-indexed)
+    nodes      : list of node property dicts, indexed by node id.
+                 Each dict must contain: area, water_height, optimal_height, elevation
+    node_edges : list of (u, v, distance) where distance is the euclidean distance
+                 between the two node centroids
+    directed   : if False, each edge is added in both directions
+
+    Returns
+    -------
+    dist : num_nodes × num_nodes distance matrix
+    """
+    if len(nodes) != num_nodes:
+        raise ValueError(
+            f"Length of nodes ({len(nodes)}) must equal num_nodes ({num_nodes})."
+        )
+
+    # Convert (u, v, distance) -> (u, v, weight) using calculate_weight
+    weighted_edges: list[tuple[int, int, float]] = []
+    for u, v, distance in node_edges:
+        if u < 0 or u >= num_nodes or v < 0 or v >= num_nodes:
+            raise ValueError(
+                f"Edge ({u}, {v}) references a node outside the valid range [0, {num_nodes - 1}]."
+            )
+        weight = calculate_weight(nodes[u], nodes[v], distance)
+        weighted_edges.append((u, v, weight))
+
+    return build_distance_matrix(num_nodes, weighted_edges, directed=directed)
 
 
 def floyd_warshall(
@@ -164,6 +229,32 @@ def run(
     next_node : successor matrix for path reconstruction
     """
     dist = build_distance_matrix(num_nodes, edges, directed=directed)
+    return floyd_warshall(dist)
+
+
+def run_from_node_data(
+    num_nodes: int,
+    nodes: list[dict],
+    node_edges: list[tuple[int, int, float]],
+    directed: bool = True,
+) -> tuple[list[list[float]], list[list[Optional[int]]]]:
+    """
+    Convenience wrapper: compute weights from node data, build distance matrix,
+    and run Floyd-Warshall.
+
+    Parameters
+    ----------
+    num_nodes  : total number of nodes (0-indexed)
+    nodes      : list of node property dicts (area, water_height, optimal_height, elevation)
+    node_edges : list of (u, v, distance) tuples
+    directed   : if False, edges are treated as undirected
+
+    Returns
+    -------
+    dist      : all-pairs shortest-path distance matrix
+    next_node : successor matrix for path reconstruction
+    """
+    dist = build_distance_matrix_from_node_data(num_nodes, nodes, node_edges, directed=directed)
     return floyd_warshall(dist)
 
 if __name__ == "__main__":

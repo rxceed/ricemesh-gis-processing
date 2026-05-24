@@ -1,4 +1,4 @@
-# src/arq_worker/tasks/video_tasks.py
+# src/arq_worker/tasks/videoOps_task.py
 """
 Arq task functions for video upload and frame extraction.
 
@@ -22,10 +22,9 @@ from datetime import datetime
 
 from bson import ObjectId
 from dotenv import load_dotenv
-from PIL import Image
 
-from db.gridfs_ops import gridfs_upload_file, gridfs_download_file
-from db.models import VideoUpload, ParsedImage, WebODMTask, WebODMAsset
+from db.gridfs_ops import gridfs_download_file, gridfs_upload_file
+from db.models import VideoUpload, ParsedImage, WebODMTask
 from utils import read_video_metadata
 from modules.parsevid import video_to_frames
 from server.services.webodm_service import (
@@ -33,7 +32,6 @@ from server.services.webodm_service import (
     webodm_project_get_service,
     webodm_task_create_service,
     webodm_task_get_service,
-    webodm_task_download_service,
 )
 
 
@@ -445,96 +443,78 @@ async def process_webodm_video(
     }
 
 
-# ── Task 5: Periodic WebODM status check ───────────────────────────────────
+# ── SSE helper: stream progress for a single WebODM task ──────────────────
 
-async def check_webodm_tasks(ctx: dict) -> None:
+async def stream_webodm_task_progress(
+    project_id: int,
+    task_id: str,
+    poll_interval: float = 3.0,
+    timeout_sec: float = 7_200,
+):
     """
-    Cron task that runs every minute to check the status of pending
-    WebODM tasks. Downloads and uploads assets (orthophoto) upon completion.
-    """
-    # Beanie initialization check (ctx["db"] is set in arq_worker/settings.py)
-    # Beanie models should already be initialized if arq is running.
-    
-    pending_tasks = await WebODMTask.find({"is_processed": False}).to_list()
-    if not pending_tasks:
-        return
+    Async generator that polls WebODM for a single task's live status and
+    yields SSE-formatted events until the task reaches a terminal state or
+    the timeout is reached.
 
-    print(f"[arq] checking {len(pending_tasks)} pending WebODM tasks…")
-    
+    WebODM status codes:
+        10  Queued
+        20  Running
+        30  Failed
+        40  Completed
+
+    Yields strings in SSE wire format:  data: <json>\n\n
+    """
+    # WebODM status code → human-readable label
+    _STATUS_LABELS = {10: "queued", 20: "running", 30: "failed", 40: "completed"}
+    _TERMINAL      = {30, 40}
+
+    elapsed = 0.0
+
     try:
         token = await webodm_auth_service()
-    except Exception as e:
-        print(f"[arq] failed to authenticate with WebODM: {e}")
+    except Exception as exc:
+        payload = {"error": f"WebODM authentication failed: {exc}"}
+        yield f"data: {json.dumps(payload)}\n\n"
         return
 
-    for task in pending_tasks:
+    while elapsed < timeout_sec:
         try:
-            # 1. Get current status from WebODM
-            # WebODM status codes: 10 (Queued), 20 (Running), 30 (Failed), 40 (Completed)
-            status_data = await webodm_task_get_service(task.webodm_project_id, token, task_id=task.webodm_task_id)
-            
-            # WebODM returns a nested status object
-            status_obj = status_data.get("status", {})
-            status_code = status_obj.get("code")
-            
-            if status_code == 40: # COMPLETED
-                print(f"[arq] WebODM task {task.webodm_task_id} completed. Downloading orthophoto…")
-                
-                # 2. Download orthophoto.tif
-                res = await webodm_task_download_service(task.project_name, task.task_name, "orthophoto.tif", token)
-                
-                # 3. Save to temp file
-                tmp_tif = DOWNLOAD_DIR / f"{task.webodm_task_id}_orthophoto.tif"
-                tmp_tif.parent.mkdir(parents=True, exist_ok=True)
-                
-                with open(tmp_tif, "wb") as f:
-                    for chunk in res.iter_content(chunk_size=1024*1024):
-                        f.write(chunk)
-                
-                # 4. Extract metadata (size & resolution)
-                file_size = tmp_tif.stat().st_size
-                
-                # Use PIL to get resolution. TIFF files can be large, but PIL.Image.open is lazy.
-                with Image.open(tmp_tif) as img:
-                    width, height = img.size
-                
-                # 5. Upload to GridFS
-                gridfs_id = await gridfs_upload_file(ctx["db"], tmp_tif, f"{task.task_name}_orthophoto.tif", bucket_name="webodm_assets")
-                
-                # 6. Create WebODMAsset record
-                asset = WebODMAsset(
-                    gridfs_file_id=gridfs_id,
-                    owner_id=task.owner_id,
-                    project_name=task.project_name,
-                    project_id=task.webodm_project_id,
-                    task_name=task.task_name,
-                    task_id=task.webodm_task_id,
-                    file_size_bytes=file_size,
-                    resolution=[width, height]
-                )
-                await asset.insert()
-                
-                # 7. Update tracking task
-                task.is_processed = True
-                task.status = "completed"
-                await task.save()
-                
-                # Clean up
-                tmp_tif.unlink(missing_ok=True)
-                print(f"[arq] Successfully processed asset for task {task.webodm_task_id}")
-                
-            elif status_code == 30: # FAILED
-                print(f"[arq] WebODM task {task.webodm_task_id} failed.")
-                task.is_processed = True
-                task.status = "failed"
-                await task.save()
-                
-            else:
-                # Still running or queued, update status in DB
-                status_name = status_obj.get("name", "unknown")
-                if task.status != status_name:
-                    task.status = status_name
-                    await task.save()
+            task_data = await webodm_task_get_service(project_id, token, task_id=str(task_id))
+        except Exception as exc:
+            payload = {"error": f"Failed to fetch task status: {exc}"}
+            yield f"data: {json.dumps(payload)}\n\n"
+            return
 
-        except Exception as e:
-            print(f"[arq] error checking task {task.webodm_task_id}: {e}")
+        status_code     = task_data.get("status")
+        status_label    = _STATUS_LABELS.get(status_code, "unknown")
+        running_progress = task_data.get("running_progress", 0.0) or 0.0
+
+        payload = {
+            "project_id":       project_id,
+            "task_id":          task_id,
+            "status_code":      status_code,
+            "status":           status_label,
+            # running_progress is 0.0–1.0; surface as 0–100 percent
+            "percent":          round(running_progress * 100, 1),
+            "processing_time":  task_data.get("processing_time"),
+            "last_error":       task_data.get("last_error"),
+            "available_assets": task_data.get("available_assets", []),
+        }
+
+        yield f"data: {json.dumps(payload)}\n\n"
+
+        # Stop streaming when task has reached a terminal state
+        if status_code in _TERMINAL:
+            return
+
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+        # Re-authenticate periodically to avoid token expiry on long tasks
+        if elapsed % 1800 < poll_interval:
+            try:
+                token = await webodm_auth_service()
+            except Exception:
+                pass  # keep using the old token; next iteration will catch auth errors
+
+    yield f'data: {json.dumps({"task_id": task_id, "status": "timeout"})}\n\n'

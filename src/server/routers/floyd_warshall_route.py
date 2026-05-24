@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 
 from server.controllers.floyd_warshall_controller import (
     floyd_warshall_run,
@@ -15,10 +15,10 @@ floyd_warshall_router = APIRouter(prefix="/api/floydwarshall", tags=["Floyd-Wars
 
 
 @floyd_warshall_router.post("/run", response_model=floyd_warshall_run_response)
-async def run_floyd_warshall(ctx: floyd_warshall_run_model):
+async def run_floyd_warshall(ctx: floyd_warshall_run_model = Body(...)):
     return await floyd_warshall_run(ctx)
 
 
 @floyd_warshall_router.post("/reconstruct", response_model=floyd_warshall_reconstruct_response)
-async def reconstruct_floyd_warshall(ctx: floyd_warshall_reconstruct_model):
+async def reconstruct_floyd_warshall(ctx: floyd_warshall_reconstruct_model = Body(...)):
     return await floyd_warshall_reconstruct(ctx)

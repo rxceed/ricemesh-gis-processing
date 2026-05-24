@@ -2,18 +2,37 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 
+class node_point_model(BaseModel):
+    area: float = Field(..., gt=0, description="Area of the plot in m²")
+    water_height: float = Field(..., ge=0, description="Current water height in m")
+    optimal_height: float = Field(..., ge=0, description="Optimal water height in m")
+    elevation: float = Field(..., description="Elevation of the plot in m")
+
+
+class node_edge_model(BaseModel):
+    u: int = Field(..., ge=0, description="Source node index (0-indexed)")
+    v: int = Field(..., ge=0, description="Destination node index (0-indexed)")
+    distance: float = Field(..., gt=0, description="Euclidean distance between centroids in m")
+
+
 class floyd_warshall_run_model(BaseModel):
     num_nodes: int = Field(..., gt=0, description="Total number of nodes (0-indexed)")
-    edges: list[tuple[int, int, float]] = Field(
-        ..., description="List of (u, v, weight) edge tuples"
+    nodes: list[node_point_model] = Field(
+        ..., description="List of node properties indexed by node id"
+    )
+    edges: list[node_edge_model] = Field(
+        ..., description="List of edges with source, destination, and centroid distance"
     )
     directed: bool = Field(True, description="Treat edges as directed when True")
 
 
 class floyd_warshall_reconstruct_model(BaseModel):
     num_nodes: int = Field(..., gt=0, description="Total number of nodes (0-indexed)")
-    edges: list[tuple[int, int, float]] = Field(
-        ..., description="List of (u, v, weight) edge tuples"
+    nodes: list[node_point_model] = Field(
+        ..., description="List of node properties indexed by node id"
+    )
+    edges: list[node_edge_model] = Field(
+        ..., description="List of edges with source, destination, and centroid distance"
     )
     directed: bool = Field(True, description="Treat edges as directed when True")
     source: int = Field(..., ge=0, description="Source node index")

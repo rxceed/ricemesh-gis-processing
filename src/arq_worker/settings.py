@@ -16,10 +16,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pymongo import AsyncMongoClient
 from beanie import init_beanie
 from arq.connections import RedisSettings
-from arq import cron
 from dotenv import load_dotenv
 
-from arq_worker.tasks.videoOps_task import upload_video, parse_video, download_parsed_frames, process_webodm_video, check_webodm_tasks
+from arq_worker.tasks.videoOps_task import upload_video, parse_video, download_parsed_frames, process_webodm_video
 from server.common import MONGO_URI
 
 load_dotenv()
@@ -61,8 +60,8 @@ async def shutdown(ctx: dict) -> None:
 
 
 class WorkerSettings:
-    functions   = [upload_video, parse_video, download_parsed_frames, process_webodm_video, check_webodm_tasks]
-    cron_jobs   = [cron(check_webodm_tasks, second=0)]
+    functions   = [upload_video, parse_video, download_parsed_frames, process_webodm_video]
+    cron_jobs   = []
     on_startup  = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings(
