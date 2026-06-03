@@ -12,9 +12,12 @@ from server.services.floyd_warshall_service import (
 )
 
 
-def _extract_node_edges(ctx) -> list[tuple[int, int, float]]:
-    """Convert node_edge_model list to (u, v, distance) tuples."""
-    return [(e.u, e.v, e.distance) for e in ctx.edges]
+def _extract_node_edges(ctx) -> list[tuple[int, int, tuple[float, float], tuple[float, float]]]:
+    """Convert node_edge_model list to (u, v, centroid_u, centroid_v) tuples."""
+    return [
+        (e.u, e.v, (e.centroid_u.lon, e.centroid_u.lat), (e.centroid_v.lon, e.centroid_v.lat))
+        for e in ctx.edges
+    ]
 
 
 def _extract_nodes(ctx) -> list[dict]:

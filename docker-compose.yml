@@ -64,8 +64,35 @@ services:
       timeout: 5s
       retries: 5
 
+  emqx:
+    image: emqx/emqx:5.8
+    container_name: ricemesh_emqx
+    restart: unless-stopped
+    environment:
+      # Node identity
+      - EMQX_NAME=ricemesh_emqx
+      # Disable anonymous MQTT connections
+      - EMQX_ALLOW_ANONYMOUS=false
+      # Secure the dashboard admin account
+      - EMQX_DASHBOARD__DEFAULT_USERNAME=${EMQX_DASHBOARD_USER}
+      - EMQX_DASHBOARD__DEFAULT_PASSWORD=${EMQX_DASHBOARD_PASS}
+    ports:
+      - "${EMQX_MQTT_PORT:-1883}:1883"       # MQTT TCP
+      - "${EMQX_WS_PORT:-8083}:8083"         # MQTT WebSocket
+      - "${EMQX_DASHBOARD_PORT:-18083}:18083" # Dashboard / REST API
+    volumes:
+      - emqx_data:/opt/emqx/data
+    networks:
+      - ricemesh_net
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   redis_data:
+  emqx_data:
 
 networks:
   ricemesh_net:

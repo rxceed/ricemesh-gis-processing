@@ -1,5 +1,5 @@
 # src/server/routers/videoOps_route.py
-from fastapi import APIRouter, File, UploadFile, Request, Depends
+from fastapi import APIRouter, File, Form, UploadFile, Request, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Annotated
 
@@ -27,14 +27,15 @@ videoOps_router = APIRouter(prefix="/api/video-ops", tags=["Video Operations"])
 @videoOps_router.post("/upload", status_code=202, response_model=_videoOpsArqWorkerResponse)
 async def upload(
     req: Request,
-    upload: _videoOpsBase,
+    owner_id: Annotated[int, Form(...)],
     file: UploadFile = File(...),
 ):
     """
     Save upload to disk and enqueue GridFS upload task.
     Returns 202 immediately with a job_id to track progress.
     """
-    return await _video_upload(req=req, ctx=upload, file=file)
+    ctx = _videoOpsBase(owner_id=owner_id)
+    return await _video_upload(req=req, ctx=ctx, file=file)
 
 
 @videoOps_router.post("/parse", status_code=202, response_model=_videoOpsArqWorkerResponse)
