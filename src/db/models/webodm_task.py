@@ -7,7 +7,7 @@ from pymongo import IndexModel, ASCENDING
 class WebODMTask(Document):
     webodm_task_id: Annotated[str, Indexed(unique=True)] = Field(..., alias="webodmTaskId")
     webodm_project_id: int = Field(..., alias="webodmProjectId")
-    owner_id: int = Field(..., alias="ownerId")
+    owner_id: str = Field(..., alias="ownerId")
     project_name: str = Field(..., alias="projectName")
     task_name: str = Field(..., alias="taskName")
     status: str = "queued"

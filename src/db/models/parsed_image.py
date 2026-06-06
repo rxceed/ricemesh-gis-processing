@@ -9,7 +9,7 @@ class frames(BaseModel):
     frame_index: int = Field(..., alias="frameIndex")
 
 class ParsedImage(Document):
-    owner_id: int = Field(..., alias="ownerId")
+    owner_id: str = Field(..., alias="ownerId")
     filename: str
     image_frames: List[frames] = Field(..., alias="imageFrames")
 

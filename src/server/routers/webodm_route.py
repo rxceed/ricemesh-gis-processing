@@ -123,5 +123,5 @@ async def display_asset(ctx: _webodm_asset_download_model = Depends()):
 
 
 @webodm_router.delete("/assets/{asset_id}", response_model=_webodm_asset_delete_response)
-async def delete_asset(req: Request, asset_id: str, owner_id: int):
+async def delete_asset(req: Request, asset_id: str, owner_id: str):
     return await _webodm_asset_delete(req, asset_id, owner_id)

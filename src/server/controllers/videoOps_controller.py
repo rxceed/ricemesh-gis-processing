@@ -79,7 +79,7 @@ async def video_webodm(req: Request, ctx: _videoOpsWebodmTask):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def video_delete(req: Request, video_id: str, owner_id: int):
+async def video_delete(req: Request, video_id: str, owner_id: str):
     try:
         res = await video_delete_service(video_id, owner_id, db=req.app.state.db)
         return _videoOpsResponseBase(status=res["status"], message=res["message"])
@@ -89,7 +89,7 @@ async def video_delete(req: Request, video_id: str, owner_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def parsed_image_delete(req: Request, parsed_id: str, owner_id: int):
+async def parsed_image_delete(req: Request, parsed_id: str, owner_id: str):
     try:
         res = await parsed_image_delete_service(parsed_id, owner_id, db=req.app.state.db)
         return _videoOpsResponseBase(status=res["status"], message=res["message"])

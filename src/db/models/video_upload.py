@@ -8,7 +8,7 @@ from db.models.common import video_resolution
 
 class VideoUpload(Document):
     gridfs_file_id: Annotated[PydanticObjectId, Indexed(unique=True)]  = Field(..., alias="gridfsFileId")
-    owner_id: int = Field(..., alias="ownerId")
+    owner_id: str = Field(..., alias="ownerId")
     filename: str
     size_bytes: int = Field(..., alias="sizeBytes")
     mime_type: str = Field("video/mp4", alias="mimeType")

@@ -69,7 +69,7 @@ async def _set_progress(
 
 async def upload_video(
     ctx: dict,
-    owner_id: int,
+    owner_id: str,
     tmp_path: str,       # absolute path on disk — written during the HTTP request
     filename: str,
     content_type: str,
@@ -140,7 +140,7 @@ async def upload_video(
 
 async def _process_frame_batch(
     ctx: dict,
-    owner_id: int,
+    owner_id: str,
     filename: str,
     batch: list[tuple[Path, int]],
 ) -> None:
@@ -176,7 +176,7 @@ async def _process_frame_batch(
 
 async def parse_video(
     ctx: dict,
-    owner_id: int,
+    owner_id: str,
     filename: str,
     frame_interval: int = 1,
     start_sec: float = 0.0,
@@ -291,7 +291,7 @@ async def parse_video(
 
 async def download_parsed_frames(
     ctx: dict,
-    owner_id: int,
+    owner_id: str,
     filename: str,
 ) -> dict:
     """
@@ -338,7 +338,7 @@ async def download_parsed_frames(
 
 async def process_webodm_video(
     ctx: dict,
-    owner_id: int,
+    owner_id: str,
     filename: str,
     project_name: str,
     task_name: str | None = None,

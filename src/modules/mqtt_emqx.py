@@ -1,6 +1,6 @@
 """MQTT client helpers for EMQX broker connections."""
 
-__all__ = ["mqtt_client", "mqtt_publish"]
+__all__ = ["mqtt_client", "mqtt_publish", "mqtt_subscribe"]
 
 import os
 import aiomqtt
@@ -45,3 +45,16 @@ async def mqtt_publish(topic: str, payload: str | bytes, qos: int = 1) -> None:
     """
     async with mqtt_client() as client:
         await client.publish(topic, payload=payload, qos=qos)
+
+
+async def mqtt_subscribe(topic: str, qos: int = 1):
+    """Async generator that subscribes to a topic and yields incoming messages.
+    Args:
+        topic: MQTT topic string (supports wildcards, e.g. 'sensor/#').
+        qos:   Quality of service level (0, 1, or 2). Defaults to 1.
+    """
+    async with mqtt_client() as client:
+        # Subscribe and listen for messages
+        await client.subscribe(topic, qos=qos)
+        async for message in client.messages:
+            yield message

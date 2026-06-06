@@ -8,17 +8,11 @@ class node_point_model(BaseModel):
     optimal_height: float = Field(..., ge=0, description="Optimal water height in m")
     elevation: float = Field(..., description="Elevation of the plot in m")
 
-
-class geometry_point_model(BaseModel):
-    lon: Annotated[float, Field(..., ge=-180, le=180, description="Longitude in decimal degrees")]
-    lat: Annotated[float, Field(..., ge=-90, le=90, description="Latitude in decimal degrees")]
-
-
 class node_edge_model(BaseModel):
     u: int = Field(..., ge=0, description="Source node index (0-indexed)")
     v: int = Field(..., ge=0, description="Destination node index (0-indexed)")
-    centroid_u: geometry_point_model = Field(..., description="Geometry centroid point of the source node")
-    centroid_v: geometry_point_model = Field(..., description="Geometry centroid point of the destination node")
+    centroid_u: str = Field(..., description="Geometry centroid point (EWKT) of the source node")
+    centroid_v: str = Field(..., description="Geometry centroid point (EWKT) of the destination node")
 
 
 class floyd_warshall_run_model(BaseModel):
@@ -53,4 +47,4 @@ class floyd_warshall_reconstruct_response(BaseModel):
     source: int
     target: int
     path: Optional[list[int]]
-    distance: Optional[float]
+    weight: Optional[float]

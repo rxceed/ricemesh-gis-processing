@@ -172,7 +172,7 @@ async def webodm_task_download_service(project_name: str, task_name: str, asset_
     
     return res
 
-async def webodm_asset_delete_service(asset_id: str, owner_id: int, db) -> dict:
+async def webodm_asset_delete_service(asset_id: str, owner_id: str, db) -> dict:
     asset = await WebODMAsset.find_one({"_id": ObjectId(asset_id), "ownerId": owner_id})
     if not asset:
         raise ValueError("WebODM asset not found or unauthorized")

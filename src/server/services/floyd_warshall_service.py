@@ -1,8 +1,12 @@
 import math
 from modules.floyd_warshall import run_from_node_data, reconstruct_path
+from utils.geometry import decode_point_4326
 
 _EARTH_RADIUS_M = 6_371_000.0
 
+def _EWKT_to_point(raw_ewkt: str) -> tuple[float, float]:
+    lon, lat = decode_point_4326(raw_ewkt)
+    return lon, lat
 
 def _haversine_distance(
     centroid_u: tuple[float, float],
@@ -27,12 +31,14 @@ def _haversine_distance(
 
 
 def _centroid_edges_to_distance_edges(
-    node_edges: list[tuple[int, int, tuple[float, float], tuple[float, float]]],
+    node_edges: list[tuple[int, int, str, str]],
 ) -> list[tuple[int, int, float]]:
     """Convert (u, v, centroid_u, centroid_v) tuples to (u, v, distance_m) tuples."""
     result = []
     for u, v, centroid_u, centroid_v in node_edges:
-        distance = _haversine_distance(centroid_u, centroid_v)
+        point_u = _EWKT_to_point(centroid_u)
+        point_v = _EWKT_to_point(centroid_v)
+        distance = _haversine_distance(point_u, point_v)
         if distance <= 0:
             raise ValueError(
                 f"Computed distance between centroids of edge ({u}, {v}) is zero or negative. "
@@ -45,7 +51,7 @@ def _centroid_edges_to_distance_edges(
 async def floyd_warshall_run_service(
     num_nodes: int,
     nodes: list[dict],
-    node_edges: list[tuple[int, int, tuple[float, float], tuple[float, float]]],
+    node_edges: list[tuple[int, int, str, str]],
     directed: bool,
 ) -> list[list[float | None]]:
     """
@@ -70,7 +76,7 @@ async def floyd_warshall_run_service(
 async def floyd_warshall_reconstruct_service(
     num_nodes: int,
     nodes: list[dict],
-    node_edges: list[tuple[int, int, tuple[float, float], tuple[float, float]]],
+    node_edges: list[tuple[int, int, str, str]],
     directed: bool,
     source: int,
     target: int,

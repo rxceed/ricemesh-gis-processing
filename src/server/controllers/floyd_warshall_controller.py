@@ -12,10 +12,10 @@ from server.services.floyd_warshall_service import (
 )
 
 
-def _extract_node_edges(ctx) -> list[tuple[int, int, tuple[float, float], tuple[float, float]]]:
+def _extract_node_edges(ctx) -> list[tuple[int, int, str, str]]:
     """Convert node_edge_model list to (u, v, centroid_u, centroid_v) tuples."""
     return [
-        (e.u, e.v, (e.centroid_u.lon, e.centroid_u.lat), (e.centroid_v.lon, e.centroid_v.lat))
+        (e.u, e.v, e.centroid_u, e.centroid_v)
         for e in ctx.edges
     ]
 
@@ -44,7 +44,7 @@ async def floyd_warshall_reconstruct(
     ctx: floyd_warshall_reconstruct_model,
 ) -> floyd_warshall_reconstruct_response:
     try:
-        path, distance = await floyd_warshall_reconstruct_service(
+        path, weight = await floyd_warshall_reconstruct_service(
             ctx.num_nodes,
             _extract_nodes(ctx),
             _extract_node_edges(ctx),
@@ -56,7 +56,7 @@ async def floyd_warshall_reconstruct(
             source=ctx.source,
             target=ctx.target,
             path=path,
-            distance=distance,
+            weight=weight,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

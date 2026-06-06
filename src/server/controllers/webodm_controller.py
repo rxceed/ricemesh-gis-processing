@@ -161,7 +161,7 @@ async def webodm_task_display(ctx: webodm_asset_download_model) -> StreamingResp
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def webodm_asset_delete(req: Request, asset_id: str, owner_id: int) -> webodm_asset_delete_response:
+async def webodm_asset_delete(req: Request, asset_id: str, owner_id: str) -> webodm_asset_delete_response:
     try:
         res = await webodm_asset_delete_service(asset_id, owner_id, db=req.app.state.db)
         return webodm_asset_delete_response(**res)

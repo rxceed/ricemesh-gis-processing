@@ -3,7 +3,7 @@ from typing import Optional, List
 from db.models.video_upload import VideoUpload
 
 class videoOpsBase(BaseModel):
-    owner_id: int = Field(..., description="User ID of the video owner")
+    owner_id: str = Field(..., description="User ID of the video owner")
 
 class videoOpsParse(videoOpsBase):
     filename: str
@@ -19,7 +19,7 @@ class videoOpsWebodmTask(videoOpsBase):
 
 class videoOpsResponseBase(BaseModel):
     status: str
-    message: Optional[str]
+    message: Optional[str] = None
 
 class videoOpsArqWorkerResponse(videoOpsResponseBase):
     job_id: str

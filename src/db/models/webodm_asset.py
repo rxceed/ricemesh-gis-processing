@@ -6,7 +6,7 @@ from pymongo import IndexModel, ASCENDING
 
 class WebODMAsset(Document):
     gridfs_file_id: Annotated[PydanticObjectId, Indexed(unique=True)] = Field(..., alias="gridfsFileId")
-    owner_id: int = Field(..., alias="ownerId")
+    owner_id: str = Field(..., alias="ownerId")
     project_name: str = Field(..., alias="projectName")
     project_id: int = Field(..., alias="projectId")
     task_name: str = Field(..., alias="taskName")

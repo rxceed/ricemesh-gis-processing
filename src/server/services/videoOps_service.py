@@ -113,9 +113,9 @@ async def video_parser_service(data: dict, redis=None) -> dict:
 async def get_video_service(data: dict) -> dict:
     try:
         videos = await VideoUpload.find({"ownerId": data.owner_id}).to_list()
-        return {"status": "OK", "videos": videos}
+        return {"status": "OK", "video": videos}
     except Exception as e:
-        return e
+        raise e
 
 async def video_webodm_service(data: dict, redis=None) -> dict:
     """
@@ -136,7 +136,7 @@ async def video_webodm_service(data: dict, redis=None) -> dict:
         "message": f"WebODM processing queued for {data.filename} in project {data.project_name}.",
     }
 
-async def video_delete_service(video_id: str, owner_id: int, db) -> dict:
+async def video_delete_service(video_id: str, owner_id: str, db) -> dict:
     video = await VideoUpload.find_one({"_id": ObjectId(video_id), "ownerId": owner_id})
     if not video:
         raise ValueError("Video not found or unauthorized")
@@ -145,7 +145,7 @@ async def video_delete_service(video_id: str, owner_id: int, db) -> dict:
     await video.delete()
     return {"status": "OK", "message": f"Video {video_id} deleted"}
 
-async def parsed_image_delete_service(parsed_id: str, owner_id: int, db) -> dict:
+async def parsed_image_delete_service(parsed_id: str, owner_id: str, db) -> dict:
     parsed = await ParsedImage.find_one({"_id": ObjectId(parsed_id), "ownerId": owner_id})
     if not parsed:
         raise ValueError("Parsed image not found or unauthorized")

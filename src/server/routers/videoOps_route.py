@@ -27,7 +27,7 @@ videoOps_router = APIRouter(prefix="/api/video-ops", tags=["Video Operations"])
 @videoOps_router.post("/upload", status_code=202, response_model=_videoOpsArqWorkerResponse)
 async def upload(
     req: Request,
-    owner_id: Annotated[int, Form(...)],
+    owner_id: Annotated[str, Form(...)],
     file: UploadFile = File(...),
 ):
     """
@@ -85,16 +85,17 @@ async def job_stream(job_id: str, req: Request):
     )
 
 
-@videoOps_router.post("/get", status_code=200, response_model=_videoOpsGetVidResponse)
-async def get(req: Request, get: Annotated[_videoOpsBase, Depends()]):
-    return await _get_video(req=req, ctx=get)
+@videoOps_router.get("/get/{owner_id}", status_code=200, response_model=_videoOpsGetVidResponse)
+async def get(req: Request, owner_id: str):
+    ctx = _videoOpsBase(owner_id=owner_id)
+    return await _get_video(req=req, ctx=ctx)
 
 
 @videoOps_router.delete("/videos/{video_id}", status_code=200, response_model=_videoOpsResponseBase)
-async def delete_video(req: Request, video_id: str, owner_id: int):
+async def delete_video(req: Request, video_id: str, owner_id: str):
     return await _video_delete(req=req, video_id=video_id, owner_id=owner_id)
 
 
 @videoOps_router.delete("/parsed/{parsed_id}", status_code=200, response_model=_videoOpsResponseBase)
-async def delete_parsed_image(req: Request, parsed_id: str, owner_id: int):
+async def delete_parsed_image(req: Request, parsed_id: str, owner_id: str):
     return await _parsed_image_delete(req=req, parsed_id=parsed_id, owner_id=owner_id)

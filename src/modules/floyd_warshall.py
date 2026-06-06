@@ -256,14 +256,3 @@ def run_from_node_data(
     """
     dist = build_distance_matrix_from_node_data(num_nodes, nodes, node_edges, directed=directed)
     return floyd_warshall(dist)
-
-if __name__ == "__main__":
-    # arg_parser = _ArgumentParser()
-    # arg_parser.add_argument("input", type=str, help="file path to input video relative to working directory")
-    # arg_parser.add_argument("-s", "--start-sec", type=float, help="starting point of the video that want to be parsed in seconds")
-    # arg_parser.add_argument("-e","--end-sec", type=float, help="ending point of the video that want to be parsed in seconds")
-    # arg_parser.add_argument("-f", "--frame-interval", type=int, help="frame interval of the parser")
-    # arg_parser.add_argument("-c", "--compression", type=int, help="image PNG compression on a scale from 0 (no compression) to 9 (max compression)")
-    # arg_parser.add_argument("--resize", type=str, help="resize the frames to the specified dimensions in WxH (e.g., 1920x1080)")
-    # args = arg_parser.parse_args()
-    print("Y")
