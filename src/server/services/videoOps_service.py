@@ -155,3 +155,23 @@ async def parsed_image_delete_service(parsed_id: str, owner_id: str, db) -> dict
     
     await parsed.delete()
     return {"status": "OK", "message": f"Parsed image {parsed_id} deleted"}
+
+
+async def get_parsed_images_service(
+    owner_id: str | None = None,
+    filename: str | None = None,
+) -> dict:
+    """Return parsed image documents, optionally filtered by owner_id and/or filename."""
+    query_filters = []
+
+    if owner_id:
+        query_filters.append(ParsedImage.owner_id == owner_id)
+    if filename:
+        query_filters.append(ParsedImage.filename == filename)
+
+    if query_filters:
+        images = await ParsedImage.find(*query_filters).to_list()
+    else:
+        images = await ParsedImage.find_all().to_list()
+
+    return {"status": "OK", "images": images}

@@ -25,14 +25,14 @@ load_dotenv()
 
 
 async def startup(ctx: dict) -> None:
-    from db.models import VideoUpload, ParsedImage, WebODMTask
+    from db.models import VideoUpload, ParsedImage, WebODMTask, JobLog
 
     # Same AsyncMongoClient that FastAPI uses — Beanie 2.x supports it.
     client = AsyncMongoClient(MONGO_URI)
     db     = client[os.environ['DATABASE']]
     await init_beanie(
         database=db,
-        document_models=[VideoUpload, ParsedImage, WebODMTask],
+        document_models=[VideoUpload, ParsedImage, WebODMTask, JobLog],
     )
 
     ctx["db"]           = db

@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from server.routers.videoOps_route import videoOps_router
 from server.routers.webodm_route import webodm_router
 from server.routers.floyd_warshall_route import floyd_warshall_router
+from server.routers.job_log_route import job_log_router
 import db.connection as conn
 from arq import create_pool
 from arq.connections import RedisSettings
@@ -10,6 +11,8 @@ from server.common import MONGO_URI
 import os
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from modules.device_bootstrap import fetch_device_topics
+from modules.mqtt_listener import start_mqtt_listener
 
 load_dotenv()
 
@@ -30,7 +33,12 @@ async def lifespan(app: FastAPI):
             host=os.getenv("REDIS_HOST", "localhost"),
             port=int(os.getenv("REDIS_PORT", 6379)),
         ))
-    
+
+    # Fetch device topics from the RiceMesh API and start MQTT subscriptions
+    print("Fetching device topics from RiceMesh API...")
+    topics = await fetch_device_topics()
+    mqtt_task = start_mqtt_listener(topics, redis)
+
     yield {"db": db, "client": client, "redis": redis}
     
     print("Closing database connection...")
@@ -43,6 +51,13 @@ async def lifespan(app: FastAPI):
     print("Closing Redis connection...")
     await redis.close()
     print("Redis connection closed.")
+
+    # Cancel the persistent MQTT listener
+    mqtt_task.cancel()
+    try:
+        await mqtt_task
+    except Exception:
+        pass
 
 gisProc = FastAPI(title="RiceMesh GIS Processing API", lifespan=lifespan)
 origins = [
@@ -72,6 +87,7 @@ async def add_state_middleware(request: Request, call_next):
 gisProc.include_router(videoOps_router)
 gisProc.include_router(webodm_router)
 gisProc.include_router(floyd_warshall_router)
+gisProc.include_router(job_log_router)
 
 @gisProc.get("/", tags=["Health Check"])
 async def root():

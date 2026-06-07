@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List
+from pydantic_mongo import PydanticObjectId
 from db.models.video_upload import VideoUpload
 
 class videoOpsBase(BaseModel):
@@ -26,3 +27,22 @@ class videoOpsArqWorkerResponse(videoOpsResponseBase):
 
 class videoOpsGetVidResponse(videoOpsResponseBase):
     video: List[VideoUpload]
+
+
+class framesResponse(BaseModel):
+    gridfs_file_id: PydanticObjectId = Field(..., alias="gridfsFileId")
+    frame_index: int = Field(..., alias="frameIndex")
+
+    model_config = {"populate_by_name": True, "from_attributes": True}
+
+
+class parsedImageResponse(BaseModel):
+    owner_id: str = Field(..., alias="ownerId")
+    filename: str
+    image_frames: List[framesResponse] = Field(..., alias="imageFrames")
+
+    model_config = {"populate_by_name": True, "from_attributes": True}
+
+
+class parsedImageListResponse(videoOpsResponseBase):
+    images: List[parsedImageResponse]

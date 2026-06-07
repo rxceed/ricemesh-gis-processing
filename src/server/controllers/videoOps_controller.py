@@ -11,14 +11,16 @@ from server.schemas.videoOps_schema import (
     videoOpsWebodmTask as _videoOpsWebodmTask, 
     videoOpsResponseBase as _videoOpsResponseBase, 
     videoOpsArqWorkerResponse as _videoOpsArqWorkerResponse,
-    videoOpsGetVidResponse as _videoOpsGetVidResponse)
+    videoOpsGetVidResponse as _videoOpsGetVidResponse,
+    parsedImageListResponse as _parsedImageListResponse)
 from server.services.videoOps_service import (
     get_video_service,
     video_parser_service,
     video_upload_service,
     video_webodm_service,
     video_delete_service,
-    parsed_image_delete_service
+    parsed_image_delete_service,
+    get_parsed_images_service,
 )
 
 
@@ -95,6 +97,14 @@ async def parsed_image_delete(req: Request, parsed_id: str, owner_id: str):
         return _videoOpsResponseBase(status=res["status"], message=res["message"])
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def get_parsed_images(owner_id: str | None, filename: str | None):
+    try:
+        res = await get_parsed_images_service(owner_id=owner_id, filename=filename)
+        return _parsedImageListResponse(status=res["status"], images=res["images"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

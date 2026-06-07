@@ -9,7 +9,8 @@ from server.schemas.videoOps_schema import (
     videoOpsWebodmTask as _videoOpsWebodmTask, 
     videoOpsResponseBase as _videoOpsResponseBase, 
     videoOpsArqWorkerResponse as _videoOpsArqWorkerResponse,
-    videoOpsGetVidResponse as _videoOpsGetVidResponse)
+    videoOpsGetVidResponse as _videoOpsGetVidResponse,
+    parsedImageListResponse as _parsedImageListResponse)
 from server.controllers.videoOps_controller import (
     video_upload      as _video_upload,
     video_parser      as _video_parser,
@@ -19,6 +20,7 @@ from server.controllers.videoOps_controller import (
     job_event_stream  as _job_event_stream,
     video_delete      as _video_delete,
     parsed_image_delete as _parsed_image_delete,
+    get_parsed_images as _get_parsed_images,
 )
 
 videoOps_router = APIRouter(prefix="/api/video-ops", tags=["Video Operations"])
@@ -99,3 +101,12 @@ async def delete_video(req: Request, video_id: str, owner_id: str):
 @videoOps_router.delete("/parsed/{parsed_id}", status_code=200, response_model=_videoOpsResponseBase)
 async def delete_parsed_image(req: Request, parsed_id: str, owner_id: str):
     return await _parsed_image_delete(req=req, parsed_id=parsed_id, owner_id=owner_id)
+
+
+@videoOps_router.get("/parsed", status_code=200, response_model=_parsedImageListResponse)
+async def list_parsed_images(
+    owner_id: str | None = None,
+    filename: str | None = None,
+):
+    """List parsed images, optionally filtered by owner_id and/or filename query params."""
+    return await _get_parsed_images(owner_id=owner_id, filename=filename)

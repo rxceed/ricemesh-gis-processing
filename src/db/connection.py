@@ -28,7 +28,7 @@ async def init_db(db):
     motor.motor_asyncio.AsyncIOMotorClient is the async driver Beanie wraps.
     """
     from beanie import init_beanie
-    from db.models import VideoUpload, ParsedImage, WebODMAsset, WebODMTask
+    from db.models import VideoUpload, ParsedImage, WebODMAsset, WebODMTask, JobLog
     try:
         await init_beanie(
             database=db,
@@ -36,7 +36,8 @@ async def init_db(db):
                 VideoUpload,
                     ParsedImage,
                     WebODMAsset,
-                    WebODMTask
+                    WebODMTask,
+                    JobLog,
                 ],
             )
     except Exception as e:

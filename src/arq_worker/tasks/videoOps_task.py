@@ -24,7 +24,7 @@ from bson import ObjectId
 from dotenv import load_dotenv
 
 from db.gridfs_ops import gridfs_download_file, gridfs_upload_file
-from db.models import VideoUpload, ParsedImage, WebODMTask
+from db.models import VideoUpload, ParsedImage, WebODMTask, JobLog
 from utils import read_video_metadata
 from modules.parsevid import video_to_frames
 from server.services.webodm_service import (
@@ -65,6 +65,25 @@ async def _set_progress(
     )
 
 
+# ── Job log helpers ──────────────────────────────────────────────────────
+
+async def _log_job_start(ctx: dict, task_name: str, **job_args) -> None:
+    """Insert a JobLog document when a task begins."""
+    log = JobLog(
+        job_id=ctx["job_id"],
+        task=task_name,
+        job_args=job_args,
+    )
+    await log.insert()
+
+
+async def _delete_job_log(job_id: str) -> None:
+    """Remove the JobLog document once a task completes (or fails)."""
+    doc = await JobLog.find_one(JobLog.job_id == job_id)
+    if doc:
+        await doc.delete()
+
+
 # ── Task 1: upload video ──────────────────────────────────────────────────
 
 async def upload_video(
@@ -84,6 +103,15 @@ async def upload_video(
     the entire video in memory.
     """
     path = Path(tmp_path)
+
+    # Log job start
+    await _log_job_start(
+        ctx, "upload_video",
+        owner_id=owner_id,
+        filename=filename,
+        content_type=content_type,
+        file_size=file_size,
+    )
 
     try:
         # ── Stage 1: GridFS upload ────────────────────────────────────────
@@ -131,9 +159,9 @@ async def upload_video(
         }
 
     finally:
-        # Always clean up the temp file — success or failure.
-        # missing_ok=True in case the file was already cleaned up on a retry.
+        # Always clean up the temp file and job log — success or failure.
         path.unlink(missing_ok=True)
+        await _delete_job_log(ctx["job_id"])
 
 
 # ── Batch Processor Helper ────────────────────────────────────────────────
@@ -189,102 +217,116 @@ async def parse_video(
     Frames are uploaded to GridFS and pushed to MongoDB in batches of 20
     to ensure high throughput and prevent hitting BSON document limits.
     """
-    # ── Stage 1: find video document ─────────────────────────────────────
-    await _set_progress(ctx, "fetching", 0, f"Looking up {filename}…")
+    # Log job start
+    await _log_job_start(
+        ctx, "parse_video",
+        owner_id=owner_id,
+        filename=filename,
+        frame_interval=frame_interval,
+        start_sec=start_sec,
+        end_sec=end_sec,
+    )
 
-    video_doc = await VideoUpload.find_one({"ownerId": owner_id, "filename": filename})
-    if not video_doc:
-        raise FileNotFoundError(
-            f"VideoUpload not found: ownerId={owner_id} filename={filename}"
-        )
+    try:
+        # ── Stage 1: find video document ──────────────────────────────────
+        await _set_progress(ctx, "fetching", 0, f"Looking up {filename}…")
 
-    # ── Stage 2: download from GridFS ─────────────────────────────────────
-    dest = DOWNLOAD_DIR / filename
+        video_doc = await VideoUpload.find_one({"ownerId": owner_id, "filename": filename})
+        if not video_doc:
+            raise FileNotFoundError(
+                f"VideoUpload not found: ownerId={owner_id} filename={filename}"
+            )
 
-    if not dest.exists():
-        DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        await _set_progress(ctx, "downloading", 5, f"Downloading {filename}…")
-        await gridfs_download_file(
-            ctx["db"], video_doc.gridfs_file_id, dest, bucket_name="videos"
-        )
+        # ── Stage 2: download from GridFS ─────────────────────────────────────
+        dest = DOWNLOAD_DIR / filename
 
-    # ── Stage 3: frame extraction (CPU-bound) ─────────────────────────────
-    # Create/Reset ParsedImage document
-    await ParsedImage.find({"ownerId": owner_id, "filename": filename}).delete()
-    parsed_image = ParsedImage(ownerId=owner_id, filename=filename, imageFrames=[])
-    await parsed_image.insert()
+        if not dest.exists():
+            DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            await _set_progress(ctx, "downloading", 5, f"Downloading {filename}…")
+            await gridfs_download_file(
+                ctx["db"], video_doc.gridfs_file_id, dest, bucket_name="videos"
+            )
 
-    await _set_progress(ctx, "extracting", 10, "Starting frame extraction…")
+        # ── Stage 3: frame extraction (CPU-bound) ─────────────────────────────
+        # Create/Reset ParsedImage document
+        await ParsedImage.find({"ownerId": owner_id, "filename": filename}).delete()
+        parsed_image = ParsedImage(ownerId=owner_id, filename=filename, imageFrames=[])
+        await parsed_image.insert()
 
-    output_dir = PARSED_TMP_DIR / Path(filename).stem
-    output_dir.mkdir(parents=True, exist_ok=True)
+        await _set_progress(ctx, "extracting", 10, "Starting frame extraction…")
 
-    loop      = asyncio.get_event_loop()
-    throttle  = max(1, 30 // frame_interval)  # report ~once per second of video
-    
-    frame_batch = []
+        output_dir = PARSED_TMP_DIR / Path(filename).stem
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    def on_progress(saved_count: int, total_frames: int) -> None:
-        """
-        Called by video_to_frames() inside the worker thread.
-        """
-        if saved_count % throttle != 0 and saved_count != total_frames:
-            return
+        loop      = asyncio.get_event_loop()
+        throttle  = max(1, 30 // frame_interval)  # report ~once per second of video
 
-        percent = 10 + int(saved_count / max(total_frames, 1) * 85)  # 10 → 95 %
-        coro = _set_progress(
-            ctx, "extracting", percent,
-            f"Extracted {saved_count}/{total_frames} frames",
-            current_frame=saved_count,
-            total_frames=total_frames,
-        )
-        asyncio.run_coroutine_threadsafe(coro, loop)
+        frame_batch = []
 
-    def save_to_db_callback(filepath: Path, frame_index: int) -> None:
-        """
-        Batch frames and schedule async upload/database update.
-        """
-        frame_batch.append((filepath, frame_index))
-        if len(frame_batch) >= 20:
-            batch_to_process = frame_batch[:]
-            frame_batch.clear()
-            coro = _process_frame_batch(ctx, owner_id, filename, batch_to_process)
+        def on_progress(saved_count: int, total_frames: int) -> None:
+            """
+            Called by video_to_frames() inside the worker thread.
+            """
+            if saved_count % throttle != 0 and saved_count != total_frames:
+                return
+
+            percent = 10 + int(saved_count / max(total_frames, 1) * 85)  # 10 → 95 %
+            coro = _set_progress(
+                ctx, "extracting", percent,
+                f"Extracted {saved_count}/{total_frames} frames",
+                current_frame=saved_count,
+                total_frames=total_frames,
+            )
             asyncio.run_coroutine_threadsafe(coro, loop)
 
-    extracted_frames, out_path = await loop.run_in_executor(
-        ctx["executor"],
-        partial(
-            video_to_frames,
-            dest,
-            output_dir,
-            start_sec=start_sec,
-            end_sec=end_sec,
-            frame_interval=frame_interval,
-            compression=9,
-            on_progress=on_progress,
-            save_to_db=save_to_db_callback,
-        ),
-    )
-    
-    # Final flush for remaining frames in the last batch
-    if frame_batch:
-        await _process_frame_batch(ctx, owner_id, filename, frame_batch)
+        def save_to_db_callback(filepath: Path, frame_index: int) -> None:
+            """
+            Batch frames and schedule async upload/database update.
+            """
+            frame_batch.append((filepath, frame_index))
+            if len(frame_batch) >= 20:
+                batch_to_process = frame_batch[:]
+                frame_batch.clear()
+                coro = _process_frame_batch(ctx, owner_id, filename, batch_to_process)
+                asyncio.run_coroutine_threadsafe(coro, loop)
 
-    await _set_progress(
-        ctx, "complete", 100,
-        f"Extracted {extracted_frames} frames",
-        extracted_frames=extracted_frames,
-    )
+        extracted_frames, out_path = await loop.run_in_executor(
+            ctx["executor"],
+            partial(
+                video_to_frames,
+                dest,
+                output_dir,
+                start_sec=start_sec,
+                end_sec=end_sec,
+                frame_interval=frame_interval,
+                compression=9,
+                on_progress=on_progress,
+                save_to_db=save_to_db_callback,
+            ),
+        )
 
-    return {
-        "status":           "parsed",
-        "filename":         filename,
-        "extracted_frames": extracted_frames,
-        "output_dir":       str(out_path),
-        "frame_interval":   frame_interval,
-        "start_sec":        start_sec,
-        "end_sec":          end_sec,
-    }
+        # Final flush for remaining frames in the last batch
+        if frame_batch:
+            await _process_frame_batch(ctx, owner_id, filename, frame_batch)
+
+        await _set_progress(
+            ctx, "complete", 100,
+            f"Extracted {extracted_frames} frames",
+            extracted_frames=extracted_frames,
+        )
+
+        return {
+            "status":           "parsed",
+            "filename":         filename,
+            "extracted_frames": extracted_frames,
+            "output_dir":       str(out_path),
+            "frame_interval":   frame_interval,
+            "start_sec":        start_sec,
+            "end_sec":          end_sec,
+        }
+
+    finally:
+        await _delete_job_log(ctx["job_id"])
 
 
 # ── Task 3: download parsed frames ─────────────────────────────────────────
@@ -298,40 +340,51 @@ async def download_parsed_frames(
     Download all frames belonging to a parsed video from GridFS, archive
     them into a ZIP file, and return the path for serving.
     """
-    # ── Stage 1: find ParsedImage document ───────────────────────────────
-    await _set_progress(ctx, "fetching", 0, f"Looking up parsed frames for {filename}…")
+    # Log job start
+    await _log_job_start(
+        ctx, "download_parsed_frames",
+        owner_id=owner_id,
+        filename=filename,
+    )
 
-    parsed_image = await ParsedImage.find_one({"ownerId": owner_id, "filename": filename})
-    if not parsed_image:
-        raise FileNotFoundError(f"No parsed frames found for {filename}")
+    try:
+        # ── Stage 1: find ParsedImage document ────────────────────────────
+        await _set_progress(ctx, "fetching", 0, f"Looking up parsed frames for {filename}…")
 
-    # ── Stage 2: prepare destination ──────────────────────────────────────
-    stem         = Path(filename).stem
-    download_dir = DOWNLOAD_DIR / f"parsed_{stem}_{ctx['job_id']}"
-    download_dir.mkdir(parents=True, exist_ok=True)
-    
-    total_frames = len(parsed_image.image_frames)
-    await _set_progress(ctx, "downloading", 10, f"Downloading {total_frames} frames from GridFS…")
-    
-    # ── Stage 3: concurrent download ──────────────────────────────────────
-    dl_tasks = []
-    for frame in parsed_image.image_frames:
-        frame_path = download_dir / f"frame_{frame.frame_index:04d}.png"
-        dl_tasks.append(
-            gridfs_download_file(
-                ctx["db"], frame.gridfs_file_id, frame_path, bucket_name="parsed_frames"
+        parsed_image = await ParsedImage.find_one({"ownerId": owner_id, "filename": filename})
+        if not parsed_image:
+            raise FileNotFoundError(f"No parsed frames found for {filename}")
+
+        # ── Stage 2: prepare destination ──────────────────────────────────────
+        stem         = Path(filename).stem
+        download_dir = DOWNLOAD_DIR / f"parsed_{stem}_{ctx['job_id']}"
+        download_dir.mkdir(parents=True, exist_ok=True)
+
+        total_frames = len(parsed_image.image_frames)
+        await _set_progress(ctx, "downloading", 10, f"Downloading {total_frames} frames from GridFS…")
+
+        # ── Stage 3: concurrent download ──────────────────────────────────────
+        dl_tasks = []
+        for frame in parsed_image.image_frames:
+            frame_path = download_dir / f"frame_{frame.frame_index:04d}.png"
+            dl_tasks.append(
+                gridfs_download_file(
+                    ctx["db"], frame.gridfs_file_id, frame_path, bucket_name="parsed_frames"
+                )
             )
-        )
-    
-    await asyncio.gather(*dl_tasks)
-    
-    await _set_progress(ctx, "complete", 100, "Download preparation complete")
-    
-    return {
-        "status":     "ready",
-        "output_dir": str(download_dir),
-        "filename":   f"parsed_{stem}",
-    }
+
+        await asyncio.gather(*dl_tasks)
+
+        await _set_progress(ctx, "complete", 100, "Download preparation complete")
+
+        return {
+            "status":     "ready",
+            "output_dir": str(download_dir),
+            "filename":   f"parsed_{stem}",
+        }
+
+    finally:
+        await _delete_job_log(ctx["job_id"])
 
 
 # ── Task 4: WebODM video processing ────────────────────────────────────────
@@ -349,98 +402,112 @@ async def process_webodm_video(
     2. Find the WebODM project.
     3. Upload frames and create a WebODM task.
     """
-    # ── Stage 1: prepare frames locally ───────────────────────────────────
-    stem = Path(filename).stem
-    download_dir = DOWNLOAD_DIR / f"parsed_{stem}"
-    
-    # Check if files already exist in the expected directory
-    if not (download_dir.exists() and any(download_dir.iterdir())):
-        await _set_progress(ctx, "fetching", 0, f"Downloading frames for {filename}…")
-        
-        parsed_image = await ParsedImage.find_one({"ownerId": owner_id, "filename": filename})
-        if not parsed_image:
-            raise FileNotFoundError(f"No parsed frames found for {filename}")
-            
-        download_dir.mkdir(parents=True, exist_ok=True)
-        dl_tasks = []
-        for frame in parsed_image.image_frames:
-            frame_path = download_dir / f"frame_{frame.frame_index:04d}.png"
-            dl_tasks.append(
-                gridfs_download_file(
-                    ctx["db"], frame.gridfs_file_id, frame_path, bucket_name="parsed_frames"
-                )
-            )
-        await asyncio.gather(*dl_tasks)
-
-    # ── Stage 2: WebODM Authentication & Project Verification ─────────────
-    await _set_progress(ctx, "webodm_auth", 40, "Authenticating with WebODM…")
-    token = await webodm_auth_service()
-    
-    await _set_progress(ctx, "webodm_project", 50, f"Finding project '{project_name}'…")
-    project_data = await webodm_project_get_service(token, name=project_name)
-    
-    # WebODM API might return a list or a dict with a 'results' key
-    if isinstance(project_data, dict):
-        results = project_data.get("results", [])
-    elif isinstance(project_data, list):
-        results = project_data
-    else:
-        results = []
-
-    # Find the specific project by name to be safe
-    project = next((p for p in results if p.get("name") == project_name), None)
-    
-    if not project:
-        raise ValueError(f"WebODM project '{project_name}' not found. Please create it first.")
-    
-    project_id = project["id"]
-
-    # ── Stage 3: Task Creation in WebODM ───────────────────────────────────
-    await _set_progress(ctx, "webodm_upload", 60, f"Uploading frames to WebODM project {project_id}…")
-    
-    file_tuples = []
-    # Collect all .png files in the download directory
-    image_files = sorted(list(download_dir.glob("*.png")))
-    
-    if not image_files:
-         raise FileNotFoundError(f"No image files found in {download_dir}")
-
-    # Read files into memory for the upload service
-    # Note: If there are MANY frames, this might use a lot of RAM. 
-    # For now, we follow the existing pattern in webodm_controller.
-    for img_path in image_files:
-        with open(img_path, "rb") as f:
-            content = f.read()
-            file_tuples.append((img_path.name, content, "image/png"))
-
-    await _set_progress(ctx, "webodm_creating", 90, "Finalizing WebODM task…")
-    
-    task_data = {}
-    if task_name:
-        task_data["name"] = task_name
-    if options:
-        task_data["options"] = options
-        
-    res = await webodm_task_create_service(project_id, file_tuples, task_data, token)
-    
-    # Save a WebODMTask tracking document for the periodic status worker
-    tracking_task = WebODMTask(
-        webodm_task_id=res.get("id"),
-        webodm_project_id=project_id,
+    # Log job start
+    await _log_job_start(
+        ctx, "process_webodm_video",
         owner_id=owner_id,
+        filename=filename,
         project_name=project_name,
-        task_name=task_name or res.get("name", "Unnamed Task"),
+        task_name=task_name,
+        options=options,
     )
-    await tracking_task.insert()
-    
-    await _set_progress(ctx, "complete", 100, f"WebODM task created: {res.get('id')}")
-    
-    return {
-        "status": "ready",
-        "webodm_task_id": res.get("id"),
-        "project_id": project_id,
-        "project_name": project_name
-    }
+
+    try:
+        # ── Stage 1: prepare frames locally ───────────────────────────────
+        stem = Path(filename).stem
+        download_dir = DOWNLOAD_DIR / f"parsed_{stem}"
+
+        # Check if files already exist in the expected directory
+        if not (download_dir.exists() and any(download_dir.iterdir())):
+            await _set_progress(ctx, "fetching", 0, f"Downloading frames for {filename}…")
+
+            parsed_image = await ParsedImage.find_one({"ownerId": owner_id, "filename": filename})
+            if not parsed_image:
+                raise FileNotFoundError(f"No parsed frames found for {filename}")
+
+            download_dir.mkdir(parents=True, exist_ok=True)
+            dl_tasks = []
+            for frame in parsed_image.image_frames:
+                frame_path = download_dir / f"frame_{frame.frame_index:04d}.png"
+                dl_tasks.append(
+                    gridfs_download_file(
+                        ctx["db"], frame.gridfs_file_id, frame_path, bucket_name="parsed_frames"
+                    )
+                )
+            await asyncio.gather(*dl_tasks)
+
+        # ── Stage 2: WebODM Authentication & Project Verification ─────────────
+        await _set_progress(ctx, "webodm_auth", 40, "Authenticating with WebODM…")
+        token = await webodm_auth_service()
+
+        await _set_progress(ctx, "webodm_project", 50, f"Finding project '{project_name}'…")
+        project_data = await webodm_project_get_service(token, name=project_name)
+
+        # WebODM API might return a list or a dict with a 'results' key
+        if isinstance(project_data, dict):
+            results = project_data.get("results", [])
+        elif isinstance(project_data, list):
+            results = project_data
+        else:
+            results = []
+
+        # Find the specific project by name to be safe
+        project = next((p for p in results if p.get("name") == project_name), None)
+
+        if not project:
+            raise ValueError(f"WebODM project '{project_name}' not found. Please create it first.")
+
+        project_id = project["id"]
+
+        # ── Stage 3: Task Creation in WebODM ───────────────────────────────────
+        await _set_progress(ctx, "webodm_upload", 60, f"Uploading frames to WebODM project {project_id}…")
+
+        file_tuples = []
+        # Collect all .png files in the download directory
+        image_files = sorted(list(download_dir.glob("*.png")))
+
+        if not image_files:
+            raise FileNotFoundError(f"No image files found in {download_dir}")
+
+        # Read files into memory for the upload service
+        # Note: If there are MANY frames, this might use a lot of RAM.
+        # For now, we follow the existing pattern in webodm_controller.
+        for img_path in image_files:
+            with open(img_path, "rb") as f:
+                content = f.read()
+                file_tuples.append((img_path.name, content, "image/png"))
+
+        await _set_progress(ctx, "webodm_creating", 90, "Finalizing WebODM task…")
+
+        task_data = {}
+        if task_name:
+            task_data["name"] = task_name
+        if options:
+            task_data["options"] = options
+
+        res = await webodm_task_create_service(project_id, file_tuples, task_data, token)
+
+        # Save a WebODMTask tracking document for the periodic status worker
+        tracking_task = WebODMTask(
+            webodm_task_id=res.get("id"),
+            webodm_project_id=project_id,
+            owner_id=owner_id,
+            project_name=project_name,
+            task_name=task_name or res.get("name", "Unnamed Task"),
+        )
+        await tracking_task.insert()
+
+        await _set_progress(ctx, "complete", 100, f"WebODM task created: {res.get('id')}")
+
+        return {
+            "status": "ready",
+            "webodm_task_id": res.get("id"),
+            "project_id": project_id,
+            "project_name": project_name
+        }
+
+    finally:
+        await _delete_job_log(ctx["job_id"])
 
 
 # ── SSE helper: stream progress for a single WebODM task ──────────────────
