@@ -17,6 +17,7 @@ from server.schemas.webodm_schema import (
     webodm_task_create_response       as _webodm_task_create_response,
     webodm_task_list_response         as _webodm_task_list_response,
     webodm_asset_delete_response      as _webodm_asset_delete_response,
+    webodm_dtm_response               as _webodm_dtm_response,
 )
 from server.controllers.webodm_controller import (
     webodm_project_create  as _webodm_project_create,
@@ -27,11 +28,13 @@ from server.controllers.webodm_controller import (
     webodm_task_create     as _webodm_task_create,
     webodm_task_get_all    as _webodm_task_get_all,
     webodm_task_get_one    as _webodm_task_get_one,
+    webodm_task_progress   as _webodm_task_progress,
     webodm_task_delete     as _webodm_task_delete,
     webodm_task_download   as _webodm_task_download,
     webodm_task_display    as _webodm_task_display,
     webodm_task_stream     as _webodm_task_stream,
     webodm_asset_delete    as _webodm_asset_delete,
+    webodm_task_get_dtm    as _webodm_task_get_dtm,
 )
 
 webodm_router = APIRouter(prefix="/webodm", tags=["WebODM"])
@@ -92,17 +95,23 @@ async def get_task(project_id: int, task_id: str):
     return await _webodm_task_get_one(project_id, task_id)
 
 
-@webodm_router.get("/projects/{project_id}/tasks/{task_id}/stream")
-async def stream_task_progress(project_id: int, task_id: str):
+@webodm_router.get("/projects/{project_id}/tasks/{task_id}/progress")
+async def get_task_progress(project_id: int, task_id: str):
+    """Return a normalised progress snapshot for a single WebODM task."""
+    return await _webodm_task_progress(project_id, task_id)
+
+
+@webodm_router.get("/projects/{project_name}/tasks/{task_id}/stream")
+async def stream_task_progress(project_name: str, task_id: str):
     """
     Server-Sent Events stream — pushes WebODM task progress every 3 seconds
     until the task completes, fails, or times out.
 
     Connect with EventSource in JS:
-        const es = new EventSource('/webodm/projects/{project_id}/tasks/{task_id}/stream')
+        const es = new EventSource('/webodm/projects/{project_name}/tasks/{task_id}/stream')
         es.onmessage = e => console.log(JSON.parse(e.data))
     """
-    return await _webodm_task_stream(project_id, task_id)
+    return await _webodm_task_stream(project_name, task_id)
 
 
 @webodm_router.delete("/projects/{project_id}/tasks/{task_id}", response_model=_webodm_delete_response)
@@ -117,11 +126,35 @@ async def download_asset(ctx: _webodm_asset_download_model = Depends()):
 
 
 @webodm_router.get("/display")
-async def display_asset(ctx: _webodm_asset_download_model = Depends()):
+async def display_asset(
+    ctx: _webodm_asset_download_model = Depends(),
+    max_dim: Optional[int] = 1024,
+    quality: Optional[int] = 85
+):
     # StreamingResponse cannot be described with response_model
-    return await _webodm_task_display(ctx)
+    return await _webodm_task_display(ctx, max_dim=max_dim, quality=quality)
 
 
 @webodm_router.delete("/assets/{asset_id}", response_model=_webodm_asset_delete_response)
 async def delete_asset(req: Request, asset_id: str, owner_id: str):
     return await _webodm_asset_delete(req, asset_id, owner_id)
+
+
+@webodm_router.get("/projects/{project_name}/tasks/{task_name}/dtm", response_model=_webodm_dtm_response)
+async def get_task_dtm(
+    project_name: str,
+    task_name: str,
+    max_resolution: Optional[int] = 100,
+    x_crs: Optional[str] = None,
+    x_bounds: Optional[str] = None,
+    x_transform: Optional[str] = None,
+):
+    """
+    Get digital terrain model (DTM) data from WebODM.
+    Extracts coordinate (lon, lat) and elevation values, optionally adjusted and scaled 
+    using coordinate system, bounding box bounds, and transform matrix.
+    """
+    return await _webodm_task_get_dtm(
+        project_name, task_name, max_resolution, x_crs, x_bounds, x_transform
+    )
+

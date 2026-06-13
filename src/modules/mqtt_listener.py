@@ -1,6 +1,6 @@
 """Persistent MQTT listener that subscribes to device topics on startup."""
 
-__all__ = ["start_mqtt_listener"]
+__all__ = ["start_mqtt_listener", "subscribe_to_topic"]
 
 import asyncio
 import json
@@ -17,6 +17,9 @@ _MQTT_PASS = os.getenv("EMQX_MQTT_PASS")
 
 # Redis key prefix for cached MQTT messages
 _CACHE_KEY_PREFIX = "mqtt_message"
+
+_subscribed_topics: set[str] = set()
+_mqtt_client: aiomqtt.Client | None = None
 
 
 async def _on_message(message: aiomqtt.Message, redis) -> None:
@@ -49,18 +52,15 @@ async def _on_message(message: aiomqtt.Message, redis) -> None:
     print(f"[mqtt] Cached {cache_key}")
 
 
-async def _listen_loop(topics: list[str], redis) -> None:
+async def _listen_loop(redis) -> None:
     """Connect to the broker, subscribe to all topics, and process messages indefinitely.
 
     Reconnects with exponential back-off (max 60 s) on connection loss.
 
     Args:
-        topics: List of MQTT topic strings to subscribe to.
         redis:  Arq Redis pool for caching incoming messages.
     """
-    if not topics:
-        print("[mqtt] No topics to subscribe to — listener not started.")
-        return
+    global _mqtt_client
 
     if not _MQTT_USER or not _MQTT_PASS:
         raise RuntimeError(
@@ -77,8 +77,11 @@ async def _listen_loop(topics: list[str], redis) -> None:
                 username=_MQTT_USER,
                 password=_MQTT_PASS,
             ) as client:
-                # Subscribe to every device topic
-                for topic in topics:
+                _mqtt_client = client
+
+                # Subscribe to all currently registered topics
+                current_topics = list(_subscribed_topics)
+                for topic in current_topics:
                     await client.subscribe(topic, qos=1)
                     print(f"[mqtt] Subscribed to: {topic}")
 
@@ -95,6 +98,8 @@ async def _listen_loop(topics: list[str], redis) -> None:
         except asyncio.CancelledError:
             print("[mqtt] Listener cancelled — shutting down.")
             return
+        finally:
+            _mqtt_client = None
 
 
 def start_mqtt_listener(topics: list[str], redis) -> asyncio.Task:
@@ -107,7 +112,35 @@ def start_mqtt_listener(topics: list[str], redis) -> asyncio.Task:
     Returns:
         The running asyncio.Task so the caller can cancel it on shutdown.
     """
+    global _subscribed_topics
+    _subscribed_topics.update(topics)
     return asyncio.create_task(
-        _listen_loop(topics, redis),
+        _listen_loop(redis),
         name="mqtt_listener",
     )
+
+
+async def subscribe_to_topic(topic: str) -> bool:
+    """Subscribe to a new MQTT topic and add it to the active listener.
+
+    If the listener is currently connected, it subscribes immediately.
+    The topic is added to the subscription list so it persists across reconnects.
+
+    Args:
+        topic: The name of the MQTT topic to subscribe to.
+
+    Returns:
+        True if subscribed immediately, False if queued (client not connected yet).
+    """
+    if not topic:
+        raise ValueError("Topic name cannot be empty")
+
+    if topic in _subscribed_topics:
+        return _mqtt_client is not None
+
+    _subscribed_topics.add(topic)
+    if _mqtt_client is not None:
+        await _mqtt_client.subscribe(topic, qos=1)
+        print(f"[mqtt] Dynamically subscribed to: {topic}")
+        return True
+    return False

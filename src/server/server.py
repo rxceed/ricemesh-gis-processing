@@ -4,6 +4,7 @@ from server.routers.videoOps_route import videoOps_router
 from server.routers.webodm_route import webodm_router
 from server.routers.floyd_warshall_route import floyd_warshall_router
 from server.routers.job_log_route import job_log_router
+from server.routers.mqtt_route import mqtt_router
 import db.connection as conn
 from arq import create_pool
 from arq.connections import RedisSettings
@@ -88,6 +89,7 @@ gisProc.include_router(videoOps_router)
 gisProc.include_router(webodm_router)
 gisProc.include_router(floyd_warshall_router)
 gisProc.include_router(job_log_router)
+gisProc.include_router(mqtt_router)
 
 @gisProc.get("/", tags=["Health Check"])
 async def root():

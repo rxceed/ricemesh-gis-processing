@@ -101,3 +101,16 @@ class webodm_task_cancel_response(BaseModel):
 class webodm_asset_delete_response(BaseModel):
     status: str
     message: str
+
+
+class webodm_dtm_point(BaseModel):
+    lon: float
+    lat: float
+    elevation: float
+    x: Optional[float] = None
+    y: Optional[float] = None
+
+
+
+class webodm_dtm_response(BaseModel):
+    points: List[webodm_dtm_point]

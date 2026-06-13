@@ -31,7 +31,7 @@ from server.services.webodm_service import (
     webodm_auth_service,
     webodm_project_get_service,
     webodm_task_create_service,
-    webodm_task_get_service,
+    webodm_task_progress_service,
 )
 
 
@@ -408,7 +408,7 @@ async def process_webodm_video(
         owner_id=owner_id,
         filename=filename,
         project_name=project_name,
-        task_name=task_name,
+        odm_task_name=task_name,
         options=options,
     )
 
@@ -487,9 +487,11 @@ async def process_webodm_video(
 
         res = await webodm_task_create_service(project_id, file_tuples, task_data, token)
 
+        webodm_task_id = res.get("id")
+
         # Save a WebODMTask tracking document for the periodic status worker
         tracking_task = WebODMTask(
-            webodm_task_id=res.get("id"),
+            webodm_task_id=webodm_task_id,
             webodm_project_id=project_id,
             owner_id=owner_id,
             project_name=project_name,
@@ -497,91 +499,86 @@ async def process_webodm_video(
         )
         await tracking_task.insert()
 
-        await _set_progress(ctx, "complete", 100, f"WebODM task created: {res.get('id')}")
+        # ── Stage 4: Poll WebODM task progress until completion ───────────────
+        await _set_progress(
+            ctx, "webodm_processing", 91,
+            f"WebODM task {webodm_task_id} created — waiting for processing…",
+            webodm_task_id=webodm_task_id,
+        )
+
+        POLL_INTERVAL = 5.0       # seconds between progress checks
+        REAUTH_INTERVAL = 1800.0  # re-authenticate every 30 minutes
+        TIMEOUT_SEC = 7_200.0     # 2-hour hard timeout
+        _TERMINAL = {30, 40, 50}      # 30=Failed, 40=Completed, 50=Canceled
+
+        elapsed = 0.0
+
+        while elapsed < TIMEOUT_SEC:
+            await asyncio.sleep(POLL_INTERVAL)
+            elapsed += POLL_INTERVAL
+
+            # Re-authenticate periodically to prevent token expiry
+            if elapsed % REAUTH_INTERVAL < POLL_INTERVAL:
+                try:
+                    token = await webodm_auth_service()
+                except Exception:
+                    pass  # keep using old token; next poll will surface auth errors
+
+            try:
+                progress = await webodm_task_progress_service(project_id, webodm_task_id, token)
+            except Exception as exc:
+                # Transient errors — log and retry on next iteration
+                await _set_progress(
+                    ctx, "webodm_processing", 91,
+                    f"Progress poll error (retrying): {exc}",
+                    webodm_task_id=webodm_task_id,
+                )
+                continue
+
+            webodm_percent = progress["percent"]
+            webodm_status = progress["status"]
+            webodm_status_code = progress["status_code"]
+
+            # Map WebODM progress (0-100) into our 91-100 range
+            mapped_percent = 91 + int(webodm_percent * 9 / 100)
+
+            await _set_progress(
+                ctx, "webodm_processing", min(mapped_percent, 99),
+                f"WebODM {webodm_status}: {webodm_percent}%",
+                webodm_task_id=webodm_task_id,
+                webodm_status=webodm_status,
+                webodm_percent=webodm_percent,
+            )
+
+            # Terminal state reached
+            if webodm_status_code in _TERMINAL:
+                if webodm_status_code == 30:
+                    raise RuntimeError(
+                        f"WebODM task {webodm_task_id} failed: {progress.get('last_error', 'unknown error')}"
+                    )
+                if webodm_status_code == 50:
+                    raise RuntimeError(
+                        f"WebODM task {webodm_task_id} was canceled"
+                    )
+                break
+
+        else:
+            # while-else: timeout reached without terminal state
+            raise TimeoutError(
+                f"WebODM task {webodm_task_id} did not complete within {TIMEOUT_SEC}s"
+            )
+
+        await _set_progress(ctx, "complete", 100, f"WebODM task completed: {webodm_task_id}")
 
         return {
-            "status": "ready",
-            "webodm_task_id": res.get("id"),
+            "status": "completed",
+            "webodm_task_id": webodm_task_id,
             "project_id": project_id,
-            "project_name": project_name
+            "project_name": project_name,
+            "available_assets": progress.get("available_assets", []),
         }
+
 
     finally:
         await _delete_job_log(ctx["job_id"])
 
-
-# ── SSE helper: stream progress for a single WebODM task ──────────────────
-
-async def stream_webodm_task_progress(
-    project_id: int,
-    task_id: str,
-    poll_interval: float = 3.0,
-    timeout_sec: float = 7_200,
-):
-    """
-    Async generator that polls WebODM for a single task's live status and
-    yields SSE-formatted events until the task reaches a terminal state or
-    the timeout is reached.
-
-    WebODM status codes:
-        10  Queued
-        20  Running
-        30  Failed
-        40  Completed
-
-    Yields strings in SSE wire format:  data: <json>\n\n
-    """
-    # WebODM status code → human-readable label
-    _STATUS_LABELS = {10: "queued", 20: "running", 30: "failed", 40: "completed"}
-    _TERMINAL      = {30, 40}
-
-    elapsed = 0.0
-
-    try:
-        token = await webodm_auth_service()
-    except Exception as exc:
-        payload = {"error": f"WebODM authentication failed: {exc}"}
-        yield f"data: {json.dumps(payload)}\n\n"
-        return
-
-    while elapsed < timeout_sec:
-        try:
-            task_data = await webodm_task_get_service(project_id, token, task_id=str(task_id))
-        except Exception as exc:
-            payload = {"error": f"Failed to fetch task status: {exc}"}
-            yield f"data: {json.dumps(payload)}\n\n"
-            return
-
-        status_code     = task_data.get("status")
-        status_label    = _STATUS_LABELS.get(status_code, "unknown")
-        running_progress = task_data.get("running_progress", 0.0) or 0.0
-
-        payload = {
-            "project_id":       project_id,
-            "task_id":          task_id,
-            "status_code":      status_code,
-            "status":           status_label,
-            # running_progress is 0.0–1.0; surface as 0–100 percent
-            "percent":          round(running_progress * 100, 1),
-            "processing_time":  task_data.get("processing_time"),
-            "last_error":       task_data.get("last_error"),
-            "available_assets": task_data.get("available_assets", []),
-        }
-
-        yield f"data: {json.dumps(payload)}\n\n"
-
-        # Stop streaming when task has reached a terminal state
-        if status_code in _TERMINAL:
-            return
-
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
-
-        # Re-authenticate periodically to avoid token expiry on long tasks
-        if elapsed % 1800 < poll_interval:
-            try:
-                token = await webodm_auth_service()
-            except Exception:
-                pass  # keep using the old token; next iteration will catch auth errors
-
-    yield f'data: {json.dumps({"task_id": task_id, "status": "timeout"})}\n\n'
