@@ -169,16 +169,16 @@ async def job_event_stream(job_id: str, redis):
             except Exception as exc:
                 payload["error"]   = str(exc)
                 payload["success"] = False
-            yield f"data: {json.dumps(payload)}\n\n"
+            yield f"event: done\ndata: {json.dumps(payload)}\n\n"
             return  # terminal — close the stream
 
         if status_val == JobStatus.not_found:
             payload["error"] = "Job not found or result expired"
-            yield f"data: {json.dumps(payload)}\n\n"
+            yield f"event: error_event\ndata: {json.dumps(payload)}\n\n"
             return
 
         yield f"data: {json.dumps(payload)}\n\n"
         await asyncio.sleep(POLL_INTERVAL)
         elapsed += POLL_INTERVAL
 
-    yield f'data: {json.dumps({"job_id": job_id, "status": "timeout"})}\n\n'
+    yield f'event: error_event\ndata: {json.dumps({"job_id": job_id, "status": "timeout"})}\n\n'

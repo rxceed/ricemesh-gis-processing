@@ -30,6 +30,7 @@ from modules.parsevid import video_to_frames
 from server.services.webodm_service import (
     webodm_auth_service,
     webodm_project_get_service,
+    webodm_project_create_service,
     webodm_task_create_service,
     webodm_task_get_service,
 )
@@ -67,11 +68,11 @@ async def _set_progress(
 
 # ── Job log helpers ──────────────────────────────────────────────────────
 
-async def _log_job_start(ctx: dict, task_name: str, **job_args) -> None:
+async def _log_job_start(ctx: dict, arq_task_name: str, **job_args) -> None:
     """Insert a JobLog document when a task begins."""
     log = JobLog(
         job_id=ctx["job_id"],
-        task=task_name,
+        task=arq_task_name,
         job_args=job_args,
     )
     await log.insert()
@@ -455,9 +456,12 @@ async def process_webodm_video(
         project = next((p for p in results if p.get("name") == project_name), None)
 
         if not project:
-            raise ValueError(f"WebODM project '{project_name}' not found. Please create it first.")
-
-        project_id = project["id"]
+            await _set_progress(ctx, "webodm_project", 55, f"Creating new project '{project_name}'…")
+            project_data = {"name": project_name, "description": f"Auto-created for user {project_name}"}
+            new_project = await webodm_project_create_service(project_data, token)
+            project_id = new_project["id"]
+        else:
+            project_id = project["id"]
 
         # ── Stage 3: Task Creation in WebODM ───────────────────────────────────
         await _set_progress(ctx, "webodm_upload", 60, f"Uploading frames to WebODM project {project_id}…")

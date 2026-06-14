@@ -2,6 +2,7 @@ import requests
 import json
 from dotenv import load_dotenv
 import os
+import asyncio
 from bson import ObjectId
 
 from db.models import WebODMAsset
@@ -34,7 +35,7 @@ async def webodm_auth_service():
     """
     auth_api_path = f"{WEBODM_ROOT}/api/token-auth/"
     data = {"username": WEBODM_USER, "password": WEBODM_PASS}
-    res = requests.post(auth_api_path, data=data)
+    res = await asyncio.to_thread(requests.post, auth_api_path, data=data)
     res.raise_for_status()
     return res.json()["token"]
 
@@ -45,25 +46,25 @@ async def webodm_project_get_service(token: str, project_id: int = None, name: s
     params = {}
     if name:
         params["name"] = name
-    res = requests.get(project_api_path, params=params, headers={"Authorization": f"JWT {token}"})
+    res = await asyncio.to_thread(requests.get, project_api_path, params=params, headers={"Authorization": f"JWT {token}"})
     res.raise_for_status()
     return res.json()
 
 async def webodm_project_create_service(data: dict, token: str):
     project_api_path = f"{WEBODM_ROOT}/api/projects/"
-    res = requests.post(project_api_path, json=data, headers={"Authorization": f"JWT {token}"})
+    res = await asyncio.to_thread(requests.post, project_api_path, json=data, headers={"Authorization": f"JWT {token}"})
     res.raise_for_status()
     return res.json()
 
 async def webodm_project_update_service(project_id: int, data: dict, token: str):
     project_api_path = f"{WEBODM_ROOT}/api/projects/{project_id}/"
-    res = requests.patch(project_api_path, json=data, headers={"Authorization": f"JWT {token}"})
+    res = await asyncio.to_thread(requests.patch, project_api_path, json=data, headers={"Authorization": f"JWT {token}"})
     res.raise_for_status()
     return res.json()
 
 async def webodm_project_delete_service(project_id: int, token: str):
     project_api_path = f"{WEBODM_ROOT}/api/projects/{project_id}/"
-    res = requests.delete(project_api_path, headers={"Authorization": f"JWT {token}"})
+    res = await asyncio.to_thread(requests.delete, project_api_path, headers={"Authorization": f"JWT {token}"})
     res.raise_for_status()
     return {"status": "deleted"}
 
@@ -100,7 +101,7 @@ async def webodm_task_create_service(project_id: int, file_tuples: list, data: d
     # WebODM accepts multiple images using the 'images' key
     file_payload = [('images', (ft[0], ft[1], ft[2])) for ft in file_tuples]
     
-    res = requests.post(task_api_path, data=payload, files=file_payload, headers={"Authorization": f"JWT {token}"})
+    res = await asyncio.to_thread(requests.post, task_api_path, data=payload, files=file_payload, headers={"Authorization": f"JWT {token}"})
     
     if res.status_code == 400:
         print(f"WebODM Task Creation 400 Error: {res.text}")
@@ -121,19 +122,19 @@ async def webodm_task_get_service(project_id: int, token: str, task_id: str = No
     params = {}
     if name:
         params["name"] = name
-    res = requests.get(task_api_path, params=params, headers={"Authorization": f"JWT {token}"})
+    res = await asyncio.to_thread(requests.get, task_api_path, params=params, headers={"Authorization": f"JWT {token}"})
     res.raise_for_status()
     return res.json()
 
 async def webodm_task_delete_service(project_id: int, task_id: str, token: str):
     task_api_path = f"{WEBODM_ROOT}/api/projects/{project_id}/tasks/{task_id}/"
-    res = requests.delete(task_api_path, headers={"Authorization": f"JWT {token}"})
+    res = await asyncio.to_thread(requests.delete, task_api_path, headers={"Authorization": f"JWT {token}"})
     res.raise_for_status()
     return {"status": "deleted"}
 
 async def webodm_task_cancel_service(project_id: int, task_id: str, token: str):
     task_api_path = f"{WEBODM_ROOT}/api/projects/{project_id}/tasks/{task_id}/cancel/"
-    res = requests.post(task_api_path, headers={"Authorization": f"JWT {token}"})
+    res = await asyncio.to_thread(requests.post, task_api_path, headers={"Authorization": f"JWT {token}"})
     res.raise_for_status()
     return res.json()
 
@@ -167,7 +168,7 @@ async def webodm_task_download_service(project_name: str, task_name: str, asset_
     
     # 3. Download asset
     download_url = f"{WEBODM_ROOT}/api/projects/{project_id}/tasks/{task_id}/download/{asset_type}"
-    res = requests.get(download_url, headers={"Authorization": f"JWT {token}"}, stream=True)
+    res = await asyncio.to_thread(requests.get, download_url, headers={"Authorization": f"JWT {token}"}, stream=True)
     res.raise_for_status()
     
     return res

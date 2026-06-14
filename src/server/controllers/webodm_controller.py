@@ -1,4 +1,5 @@
 import asyncio
+import requests
 
 from server.schemas.webodm_schema import *
 from server.services.webodm_service import *
@@ -125,6 +126,9 @@ async def webodm_task_download(ctx: webodm_asset_download_model) -> StreamingRes
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else 500
+        raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -157,6 +161,9 @@ async def webodm_task_display(ctx: webodm_asset_download_model) -> StreamingResp
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else 500
+        raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

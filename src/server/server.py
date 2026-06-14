@@ -1,3 +1,8 @@
+import sys
+import asyncio
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 from server.routers.videoOps_route import videoOps_router
@@ -35,9 +40,10 @@ async def lifespan(app: FastAPI):
         ))
 
     # Fetch device topics from the RiceMesh API and start MQTT subscriptions
-    print("Fetching device topics from RiceMesh API...")
-    topics = await fetch_device_topics()
-    mqtt_task = start_mqtt_listener(topics, redis)
+    # print("Fetching device topics from RiceMesh API...")
+    # topics = await fetch_device_topics()
+    # mqtt_task = start_mqtt_listener(topics, redis)
+    mqtt_task = None
 
     yield {"db": db, "client": client, "redis": redis}
     
@@ -53,11 +59,12 @@ async def lifespan(app: FastAPI):
     print("Redis connection closed.")
 
     # Cancel the persistent MQTT listener
-    mqtt_task.cancel()
-    try:
-        await mqtt_task
-    except Exception:
-        pass
+    if mqtt_task is not None:
+        mqtt_task.cancel()
+        try:
+            await mqtt_task
+        except Exception:
+            pass
 
 gisProc = FastAPI(title="RiceMesh GIS Processing API", lifespan=lifespan)
 origins = [

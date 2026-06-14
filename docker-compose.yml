@@ -3,14 +3,14 @@ services:
     image: mongo:7.0
     container_name: ricemesh_mongo
     restart: unless-stopped
-    user: "${UID}:${GID}"
+#    user: "${UID}:${GID}"
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
       MONGO_INITDB_DATABASE: ricemesh
     volumes:
-      - /mnt/volume-ssd-ubuntu-2/projects/protel/ricemesh-mongo:/data/db
-      - /mnt/volume-ssd-ubuntu-2/projects/protel/ricemesh-mongo:/data/configdb
+      - mongo_data:/data/db
+      - mongo_config:/data/configdb
       # Init script: creates app user with limited privileges
       #- ./mongo-init/init.js:/docker-entrypoint-initdb.d/init.js:ro
     ports:
@@ -93,6 +93,8 @@ services:
 volumes:
   redis_data:
   emqx_data:
+  mongo_data:
+  mongo_config:
 
 networks:
   ricemesh_net:

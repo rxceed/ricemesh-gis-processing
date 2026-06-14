@@ -116,7 +116,7 @@ async def download_asset(ctx: _webodm_asset_download_model = Depends()):
     return await _webodm_task_download(ctx)
 
 
-@webodm_router.get("/display")
+@webodm_router.api_route("/display", methods=["GET", "HEAD"])
 async def display_asset(ctx: _webodm_asset_download_model = Depends()):
     # StreamingResponse cannot be described with response_model
     return await _webodm_task_display(ctx)
