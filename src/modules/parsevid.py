@@ -76,14 +76,14 @@ def video_to_frames(video_path: Path, output_dir: Path, start_sec: float=0.0, en
     cap.release()
     return saved_count, output_dir
 
-def main(input_val, start, end, interval, compression, resize):
+def main(input_val, start, end, interval, compression, resize, output_dir):
     t_start = time.perf_counter()
     if input_val:
         input_path_str = str(input_val)
         input_video = Path(input_path_str).resolve()
         input_parent_path = input_video.parent
         input_file_name = input_video.stem
-        output_folder = input_parent_path / f"parsed_{input_file_name}"
+        output_folder = output_dir/f"parsed_{input_file_name}" if output_dir else input_parent_path / f"parsed_{input_file_name}"
     else:
         print("No input path provided")
         return
@@ -99,6 +99,7 @@ if __name__ == "__main__":
     arg_parser.add_argument("-e","--end-sec", type=float, help="ending point of the video that want to be parsed in seconds")
     arg_parser.add_argument("-f", "--frame-interval", type=int, help="frame interval of the parser")
     arg_parser.add_argument("-c", "--compression", type=int, help="image PNG compression on a scale from 0 (no compression) to 9 (max compression)")
+    arg_parser.add_argument("-o", "--output-dir", type=str, help="output directory for the parsed frames")
     arg_parser.add_argument("--resize", type=str, help="resize the frames to the specified dimensions in WxH (e.g., 1920x1080)")
     args = arg_parser.parse_args()
 
@@ -118,5 +119,12 @@ if __name__ == "__main__":
         compression = max(0, min(9, int(args.compression)))
     if args.resize:
         resize_val = tuple(map(int, args.resize.split('x')))
+    if args.output_dir:
+        output_dir = Path(args.output_dir).resolve()
+        if not output_dir.exists():
+            output_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        output_dir = None
 
-    main(args.input, start_time, stop_time, interval, compression, resize_val)
+
+    main(args.input, start_time, stop_time, interval, compression, resize_val, output_dir)
