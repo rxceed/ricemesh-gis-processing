@@ -5,10 +5,12 @@ from server.schemas.floyd_warshall_schema import (
     floyd_warshall_reconstruct_model,
     floyd_warshall_run_response,
     floyd_warshall_reconstruct_response,
+    floyd_warshall_matrix_model,
 )
 from server.services.floyd_warshall_service import (
     floyd_warshall_run_service,
     floyd_warshall_reconstruct_service,
+    floyd_warshall_matrix_service,
 )
 
 
@@ -27,13 +29,13 @@ def _extract_nodes(ctx) -> list[dict]:
 
 async def floyd_warshall_run(ctx: floyd_warshall_run_model) -> floyd_warshall_run_response:
     try:
-        dist = await floyd_warshall_run_service(
+        dist, successor = await floyd_warshall_run_service(
             ctx.num_nodes,
             _extract_nodes(ctx),
             _extract_node_edges(ctx),
             ctx.directed,
         )
-        return floyd_warshall_run_response(dist=dist)
+        return floyd_warshall_run_response(dist=dist, successor=successor)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -49,6 +51,28 @@ async def floyd_warshall_reconstruct(
             _extract_nodes(ctx),
             _extract_node_edges(ctx),
             ctx.directed,
+            ctx.source,
+            ctx.target,
+        )
+        return floyd_warshall_reconstruct_response(
+            source=ctx.source,
+            target=ctx.target,
+            path=path,
+            weight=weight,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def floyd_warshall_matrix(
+    ctx: floyd_warshall_matrix_model,
+) -> floyd_warshall_reconstruct_response:
+    try:
+        path, weight = await floyd_warshall_matrix_service(
+            ctx.matrix,
+            ctx.successor,
             ctx.source,
             ctx.target,
         )

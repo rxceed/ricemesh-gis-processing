@@ -1,5 +1,5 @@
 import math
-from modules.floyd_warshall import run_from_node_data, reconstruct_path
+from modules.floyd_warshall import run_from_node_data, reconstruct_path, floyd_warshall
 from utils.geometry import decode_point_4326
 
 _EARTH_RADIUS_M = 6_371_000.0
@@ -53,24 +53,24 @@ async def floyd_warshall_run_service(
     nodes: list[dict],
     node_edges: list[tuple[int, int, str, str]],
     directed: bool,
-) -> list[list[float | None]]:
+) -> tuple[list[list[float | None]], list[list[int | None]]]:
     """
     Convert centroid geometry points to distances, build the distance matrix,
     and run Floyd-Warshall.
 
-    Returns the all-pairs shortest-path distance matrix.
+    Returns the all-pairs shortest-path distance matrix and successor matrix.
     math.inf values are converted to None for JSON serialisation.
     """
     # Convert centroid pairs → haversine distances before passing to the module
     distance_edges = _centroid_edges_to_distance_edges(node_edges)
-    dist, _ = run_from_node_data(num_nodes, nodes, distance_edges, directed=directed)
+    dist, next_node = run_from_node_data(num_nodes, nodes, distance_edges, directed=directed)
 
     # Replace math.inf with None so the response is JSON-serialisable
     serialisable = [
         [None if d == math.inf else d for d in row]
         for row in dist
     ]
-    return serialisable
+    return serialisable, next_node
 
 
 async def floyd_warshall_reconstruct_service(
@@ -105,3 +105,21 @@ async def floyd_warshall_reconstruct_service(
     distance = dist[source][target]
     distance = None if distance == math.inf else distance
     return path, distance
+
+
+async def floyd_warshall_matrix_service(
+    matrix: list[list[float | None]],
+    successor: list[list[int | None]],
+    source: int,
+    target: int,
+) -> tuple[list[int] | None, float | None]:
+    """
+    Reconstruct path and weight using already provided distance matrix and successor matrix.
+    """
+    path = reconstruct_path(successor, source, target)
+    weight = None
+    if path is not None:
+        weight = matrix[source][target]
+        if weight == math.inf:
+            weight = None
+    return path, weight

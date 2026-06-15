@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, Annotated
 
 
@@ -41,6 +41,7 @@ class floyd_warshall_reconstruct_model(BaseModel):
 
 class floyd_warshall_run_response(BaseModel):
     dist: list[list[Optional[float]]]
+    successor: list[list[Optional[int]]]
 
 
 class floyd_warshall_reconstruct_response(BaseModel):
@@ -48,3 +49,36 @@ class floyd_warshall_reconstruct_response(BaseModel):
     target: int
     path: Optional[list[int]]
     weight: Optional[float]
+
+
+class floyd_warshall_matrix_model(BaseModel):
+    matrix: list[list[Optional[float]]] = Field(..., description="Square distance/weight matrix where None represents no direct edge")
+    successor: list[list[Optional[int]]] = Field(..., description="Square successor matrix for path reconstruction")
+    source: int = Field(..., ge=0, description="Source node index")
+    target: int = Field(..., ge=0, description="Target node index")
+
+    @model_validator(mode="after")
+    def _validate_matrix_and_indices(self) -> "floyd_warshall_matrix_model":
+        n = len(self.matrix)
+        if n == 0:
+            raise ValueError("Matrix cannot be empty.")
+        
+        for i, row in enumerate(self.matrix):
+            if len(row) != n:
+                raise ValueError(f"Row {i} of matrix has length {len(row)}, but matrix must be square ({n}x{n}).")
+        
+        if len(self.successor) != n:
+            raise ValueError(f"Successor matrix size ({len(self.successor)}) must match distance matrix size ({n}).")
+            
+        for i, row in enumerate(self.successor):
+            if len(row) != n:
+                raise ValueError(f"Row {i} of successor matrix has length {len(row)}, but successor matrix must be square ({n}x{n}).")
+
+        if self.source >= n:
+            raise ValueError(f"Source index {self.source} is out of bounds for matrix of size {n}.")
+            
+        if self.target >= n:
+            raise ValueError(f"Target index {self.target} is out of bounds for matrix of size {n}.")
+            
+        return self
+
