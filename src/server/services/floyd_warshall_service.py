@@ -1,6 +1,7 @@
 import math
 from modules.floyd_warshall import run_from_node_data, reconstruct_path, floyd_warshall
 from utils.geometry import decode_point_4326
+from collections import deque
 
 _EARTH_RADIUS_M = 6_371_000.0
 
@@ -123,3 +124,145 @@ async def floyd_warshall_matrix_service(
         if weight == math.inf:
             weight = None
     return path, weight
+
+
+async def floyd_warshall_matrix_multi_service(
+    matrix: list[list[float | None]],
+    successor: list[list[int | None]],
+    source: int,
+) -> list[dict]:
+    """
+    Find the most efficient route from source to every reachable target node.
+
+    Iterates all candidate targets (all nodes except source), reconstructs each
+    path via the precomputed matrix and successor, then returns only reachable
+    targets sorted by ascending weight.
+
+    Returns a list of dicts with keys: target, path, weight.
+    """
+    n = len(matrix)
+
+    if source >= n:
+        raise ValueError(f"Source index {source} is out of bounds for matrix of size {n}.")
+
+    routes = []
+    for target in range(n):
+        # Skip self-route
+        if target == source:
+            continue
+
+        path = reconstruct_path(successor, source, target)
+
+        # Skip unreachable targets
+        if path is None:
+            continue
+
+        weight = matrix[source][target]
+        if weight is None or weight == math.inf:
+            continue
+
+        routes.append({"target": target, "path": path, "weight": weight})
+
+    # Sort by weight ascending — smallest cost routes come first
+    routes.sort(key=lambda r: r["weight"])
+
+    return routes
+
+
+async def floyd_warshall_chained_routes_service(
+    matrix: list[list[float | None]],
+    successor: list[list[int | None]],
+    source: int,
+) -> list[dict]:
+    """
+    Find the most efficient chained routes from source to every reachable target.
+
+    Uses a BFS-style expansion:
+    - From source, pick the cheapest route to each reachable first-hop target.
+    - From each visited target, try reaching further nodes by chaining:
+      chained_weight = dist[source→hop] + dist[hop→new_target].
+    - If a chained route is cheaper than any previously found route to that
+      target, replace it. The chained path is built by concatenating the
+      reconstructed sub-paths (source→hop) + (hop→new_target).
+    - BFS continues until no new nodes are discovered.
+
+    Returns a list of dicts with keys: target, path, weight.
+    Sorted by ascending weight.
+    """
+    n = len(matrix)
+
+    if source >= n:
+        raise ValueError(f"Source index {source} is out of bounds for matrix of size {n}.")
+
+    def _cost(i: int, j: int) -> float | None:
+        """Return matrix cost, treating None as inf."""
+        v = matrix[i][j]
+        if v is None:
+            return math.inf
+        return v
+
+    def _join_paths(path_a: list[int], path_b: list[int]) -> list[int]:
+        """Concatenate two sub-paths, removing the duplicate shared middle node."""
+        return path_a + path_b[1:]
+
+    # best_weight[t]  → lowest total weight found so far to reach target t
+    # best_path[t]    → corresponding full path
+    best_weight: dict[int, float] = {}
+    best_path: dict[int, list[int]] = {}
+
+    # Seed: direct routes from source to every reachable node
+    for target in range(n):
+        if target == source:
+            continue
+        w = _cost(source, target)
+        if w == math.inf:
+            continue
+        path = reconstruct_path(successor, source, target)
+        if path is None:
+            continue
+        best_weight[target] = w
+        best_path[target] = path
+
+    # BFS queue: nodes whose outgoing edges we still need to explore
+    # Start from source's direct targets
+    visited: set[int] = {source}
+    queue: deque[int] = deque(best_weight.keys())
+    visited.update(best_weight.keys())
+
+    while queue:
+        hop = queue.popleft()
+        hop_weight = best_weight[hop]
+        hop_path   = best_path[hop]
+
+        # Try extending from hop to every other node
+        for new_target in range(n):
+            if new_target == source or new_target == hop:
+                continue
+
+            leg_weight = _cost(hop, new_target)
+            if leg_weight == math.inf:
+                continue
+
+            leg_path = reconstruct_path(successor, hop, new_target)
+            if leg_path is None:
+                continue
+
+            chained_weight = hop_weight + leg_weight
+            chained_path   = _join_paths(hop_path, leg_path)
+
+            # Update only if this chained route is cheaper
+            if new_target not in best_weight or chained_weight < best_weight[new_target]:
+                best_weight[new_target] = chained_weight
+                best_path[new_target]   = chained_path
+
+            # Enqueue new_target for further expansion if not yet visited
+            if new_target not in visited:
+                visited.add(new_target)
+                queue.append(new_target)
+
+    routes = [
+        {"target": t, "path": best_path[t], "weight": best_weight[t]}
+        for t in best_weight
+    ]
+    routes.sort(key=lambda r: r["weight"])
+    return routes

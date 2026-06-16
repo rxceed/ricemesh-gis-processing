@@ -6,11 +6,17 @@ from server.schemas.floyd_warshall_schema import (
     floyd_warshall_run_response,
     floyd_warshall_reconstruct_response,
     floyd_warshall_matrix_model,
+    floyd_warshall_matrix_multi_model,
+    floyd_warshall_multi_target_response,
+    floyd_warshall_target_route,
+    floyd_warshall_chained_routes_response,
 )
 from server.services.floyd_warshall_service import (
     floyd_warshall_run_service,
     floyd_warshall_reconstruct_service,
     floyd_warshall_matrix_service,
+    floyd_warshall_matrix_multi_service,
+    floyd_warshall_chained_routes_service,
 )
 
 
@@ -82,6 +88,54 @@ async def floyd_warshall_matrix(
             path=path,
             weight=weight,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def floyd_warshall_matrix_multi(
+    ctx: floyd_warshall_matrix_multi_model,
+) -> floyd_warshall_multi_target_response:
+    try:
+        routes_raw = await floyd_warshall_matrix_multi_service(
+            ctx.matrix,
+            ctx.successor,
+            ctx.source,
+        )
+        routes = [
+            floyd_warshall_target_route(
+                target=r["target"],
+                path=r["path"],
+                weight=r["weight"],
+            )
+            for r in routes_raw
+        ]
+        return floyd_warshall_multi_target_response(source=ctx.source, routes=routes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def floyd_warshall_chained_routes(
+    ctx: floyd_warshall_matrix_multi_model,
+) -> floyd_warshall_chained_routes_response:
+    try:
+        routes_raw = await floyd_warshall_chained_routes_service(
+            ctx.matrix,
+            ctx.successor,
+            ctx.source,
+        )
+        routes = [
+            floyd_warshall_target_route(
+                target=r["target"],
+                path=r["path"],
+                weight=r["weight"],
+            )
+            for r in routes_raw
+        ]
+        return floyd_warshall_chained_routes_response(source=ctx.source, routes=routes)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

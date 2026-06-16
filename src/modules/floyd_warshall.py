@@ -1,34 +1,53 @@
 import math
 from typing import Optional
-from argparse import ArgumentParser as _ArgumentParser
 
 # Sentinel value representing no direct edge between two nodes
 _INF = math.inf
 
 def calculate_weight(source: dict, dest: dict, distance):
     """
-    Calculate weight of the node
+    Calculate weight of the edge from source to dest.
 
     Parameters
     ----------
-    source      : dictionary containing property of the source plot {area, water_height, optimal_heigth, elevation}
-    dest        : dictionary containing property of the destination {area, water_height, optimal_heigth, elevation}
-    distance    : euclidean distance of the two centroids
+    source   : dict with keys area, water_height, optimal_height, elevation
+    dest     : dict with keys area, water_height, optimal_height, elevation
+    distance : euclidean distance between the two node centroids (metres)
+
     Returns
     -------
-    dist : num_nodes × num_nodes distance matrix
+    weight : float — higher means costlier / less preferred.
+             Plots with water below optimal receive lower weight (prioritised);
+             plots with water above optimal receive higher weight (deprioritised).
     """
-    v_source = source["area"]*source["water_height"]
-    v_deficit_dest = dest["area"]*max(0, dest["water_height"]-dest["optimal_height"])
-    e = 1
-    source_cost = 1/(v_source+e)
-    dest_cost = 1/(v_deficit_dest+e)
-    delta_elevation = dest["elevation"]-source["elevation"]
+    e = 1  # epsilon guard against division-by-zero
+
+    # Directional water cost: under-watered → low cost (prioritised for irrigation)
+    #                         over-watered  → high cost (deprioritised)
+    def _water_cost(node: dict) -> float:
+        deficit = node["optimal_height"] - node["water_height"]
+        scaled  = node["area"] * deficit  # m³ deficit (negative when over-watered)
+        if scaled >= 0:
+            # Under-watered or at optimal: reward proportional to deficit size
+            return 1 / (scaled + e)
+        else:
+            # Over-watered: penalise proportional to surplus magnitude
+            return 1 + abs(scaled)
+
+    source_cost = _water_cost(source)
+    dest_cost   = _water_cost(dest)
+
+    # Elevation penalty: uphill flow is significantly more expensive
+    delta_elevation = dest["elevation"] - source["elevation"]
     if delta_elevation <= 0:
         E_ij = 1
     else:
-        E_ij = 100*delta_elevation
-    weight = (distance*E_ij)*(source_cost*(source_cost/dest_cost+source_cost)+dest_cost*(dest_cost/source_cost+dest_cost))
+        E_ij = 100 * delta_elevation
+
+    weight = (distance * E_ij) * (
+        source_cost * (source_cost / dest_cost + source_cost)
+        + dest_cost * (dest_cost / source_cost + dest_cost)
+    )
     return weight
 
 def build_distance_matrix(
