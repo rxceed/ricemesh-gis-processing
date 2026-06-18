@@ -1,7 +1,7 @@
 import math
+import heapq
 from modules.floyd_warshall import run_from_node_data, reconstruct_path, floyd_warshall
 from utils.geometry import decode_point_4326
-from collections import deque
 
 _EARTH_RADIUS_M = 6_371_000.0
 
@@ -175,16 +175,19 @@ async def floyd_warshall_chained_routes_service(
     source: int,
 ) -> list[dict]:
     """
-    Find the most efficient chained routes from source to every reachable target.
+    Find the most efficient chained routes from source to every reachable target,
+    including targets that are unreachable directly from source but reachable via
+    an intermediate hop (e.g. A→B→D where A cannot reach D directly).
 
-    Uses a BFS-style expansion:
-    - From source, pick the cheapest route to each reachable first-hop target.
-    - From each visited target, try reaching further nodes by chaining:
-      chained_weight = dist[source→hop] + dist[hop→new_target].
-    - If a chained route is cheaper than any previously found route to that
-      target, replace it. The chained path is built by concatenating the
-      reconstructed sub-paths (source→hop) + (hop→new_target).
-    - BFS continues until no new nodes are discovered.
+    Uses a Dijkstra-style min-heap so that:
+    - Nodes are settled in order of cheapest known chained cost from source.
+    - Once a node is settled, its cost and path are guaranteed optimal.
+    - When a node is settled it becomes a valid hop; its Floyd-Warshall
+      outgoing legs are explored to discover further (possibly unreachable-from-
+      source) targets via chaining.
+
+    Chaining: chained_weight = weight[source→hop] + weight[hop→new_target]
+              chained_path   = path[source→hop] + path[hop→new_target][1:]
 
     Returns a list of dicts with keys: target, path, weight.
     Sorted by ascending weight.
@@ -194,49 +197,53 @@ async def floyd_warshall_chained_routes_service(
     if source >= n:
         raise ValueError(f"Source index {source} is out of bounds for matrix of size {n}.")
 
-    def _cost(i: int, j: int) -> float | None:
+    def _cost(i: int, j: int) -> float:
         """Return matrix cost, treating None as inf."""
         v = matrix[i][j]
-        if v is None:
-            return math.inf
-        return v
+        return math.inf if v is None else v
 
     def _join_paths(path_a: list[int], path_b: list[int]) -> list[int]:
         """Concatenate two sub-paths, removing the duplicate shared middle node."""
         return path_a + path_b[1:]
 
-    # best_weight[t]  → lowest total weight found so far to reach target t
-    # best_path[t]    → corresponding full path
+    # best_weight[t] → lowest total chained cost found so far to reach target t
+    # best_path[t]   → corresponding full chained path
     best_weight: dict[int, float] = {}
     best_path: dict[int, list[int]] = {}
 
-    # Seed: direct routes from source to every reachable node
-    for target in range(n):
-        if target == source:
+    # settled: nodes whose optimal cost is finalised (first pop from heap)
+    settled: set[int] = set()
+
+    # Min-heap entries: (total_cost, node, path_so_far)
+    # Seed with direct Floyd-Warshall legs from source
+    heap: list[tuple[float, int, list[int]]] = []
+
+    for candidate in range(n):
+        if candidate == source:
             continue
-        w = _cost(source, target)
+        w = _cost(source, candidate)
         if w == math.inf:
             continue
-        path = reconstruct_path(successor, source, target)
+        path = reconstruct_path(successor, source, candidate)
         if path is None:
             continue
-        best_weight[target] = w
-        best_path[target] = path
+        heapq.heappush(heap, (w, candidate, path))
 
-    # BFS queue: nodes whose outgoing edges we still need to explore
-    # Start from source's direct targets
-    visited: set[int] = {source}
-    queue: deque[int] = deque(best_weight.keys())
-    visited.update(best_weight.keys())
+    while heap:
+        cost, hop, path = heapq.heappop(heap)
 
-    while queue:
-        hop = queue.popleft()
-        hop_weight = best_weight[hop]
-        hop_path   = best_path[hop]
+        # Skip stale heap entries — node already settled with a cheaper cost
+        if hop in settled:
+            continue
 
-        # Try extending from hop to every other node
+        # Settle this node: its chained cost from source is now optimal
+        settled.add(hop)
+        best_weight[hop] = cost
+        best_path[hop] = path
+
+        # Explore Floyd-Warshall legs from hop to discover further targets
         for new_target in range(n):
-            if new_target == source or new_target == hop:
+            if new_target == source or new_target in settled:
                 continue
 
             leg_weight = _cost(hop, new_target)
@@ -247,18 +254,11 @@ async def floyd_warshall_chained_routes_service(
             if leg_path is None:
                 continue
 
-            chained_weight = hop_weight + leg_weight
-            chained_path   = _join_paths(hop_path, leg_path)
+            chained_cost = cost + leg_weight
+            chained_path = _join_paths(path, leg_path)
 
-            # Update only if this chained route is cheaper
-            if new_target not in best_weight or chained_weight < best_weight[new_target]:
-                best_weight[new_target] = chained_weight
-                best_path[new_target]   = chained_path
-
-            # Enqueue new_target for further expansion if not yet visited
-            if new_target not in visited:
-                visited.add(new_target)
-                queue.append(new_target)
+            # Push to heap; stale entries are discarded on pop via settled check
+            heapq.heappush(heap, (chained_cost, new_target, chained_path))
 
     routes = [
         {"target": t, "path": best_path[t], "weight": best_weight[t]}
