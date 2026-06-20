@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import aiomqtt
+import struct as _struct
+import httpx as _httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,6 +22,75 @@ _CACHE_KEY_PREFIX = "mqtt_message"
 
 _subscribed_topics: set[str] = set()
 _mqtt_client: aiomqtt.Client | None = None
+
+
+def _uint32_to_float(value: int) -> float:
+    """
+    Konversi uint32 ke IEEE 754 single-precision float.
+    
+    Args:
+        value: integer unsigned 32-bit (0 sampai 4294967295)
+    
+    Returns:
+        float IEEE 754
+    
+    Raises:
+        ValueError: jika value di luar range uint32
+    """
+    if not isinstance(value, int):
+        raise TypeError(f"Value harus bertipe int, dapat: {type(value)}")
+    if not (0 <= value <= 0xFFFFFFFF):
+        raise ValueError(f"Value harus dalam range [0, 4294967295], dapat: {value}")
+    
+    packed = _struct.pack('>I', value)
+    result = _struct.unpack('>f', packed)[0]
+    return result
+
+
+def _uint32_to_float_manual(value: int) -> dict:
+    """
+    Versi manual — ekstrak sign, exponent, mantissa secara eksplisit.
+    Berguna untuk debugging / edukasi.
+    
+    Returns dict dengan breakdown komponen IEEE 754.
+    """
+    if not isinstance(value, int):
+        raise TypeError(f"Value harus bertipe int, dapat: {type(value)}")
+    if not (0 <= value <= 0xFFFFFFFF):
+        raise ValueError(f"Value harus dalam range [0, 4294967295], dapat: {value}")
+    
+    sign_bit     = (value >> 31) & 0x1
+    exponent_raw = (value >> 23) & 0xFF
+    mantissa     = value & 0x7FFFFF
+
+    if exponent_raw == 0xFF:
+        if mantissa == 0:
+            result = float('-inf') if sign_bit else float('inf')
+            category = "infinity"
+        else:
+            result = float('nan')
+            category = "nan"
+    elif exponent_raw == 0:
+        exponent_actual = -126
+        fraction = mantissa / (2**23)
+        result = ((-1)**sign_bit) * fraction * (2**exponent_actual)
+        category = "subnormal"
+    else:
+        exponent_actual = exponent_raw - 127
+        fraction = 1 + mantissa / (2**23)
+        result = ((-1)**sign_bit) * fraction * (2**exponent_actual)
+        category = "normalized"
+
+    return {
+        "float_value": result,
+        "sign_bit": sign_bit,
+        "exponent_raw": exponent_raw,
+        "exponent_actual": exponent_actual if exponent_raw not in (0, 0xFF) else None,
+        "mantissa_bits": mantissa,
+        "category": category,
+        "hex": f"0x{value:08X}",
+        "binary": f"{value:032b}",
+    }
 
 
 async def _on_message(message: aiomqtt.Message, redis) -> None:
@@ -50,6 +121,41 @@ async def _on_message(message: aiomqtt.Message, redis) -> None:
     await redis.set(cache_key, cache_value)
 
     print(f"[mqtt] Cached {cache_key}")
+
+    # Process structured device telemetry data and send to backend API
+    if isinstance(payload, dict) and "device" in payload:
+        device_data = payload["device"]
+        if isinstance(device_data, list):
+            parsed_devices = []
+            for item in device_data:
+                if isinstance(item, dict):
+                    d_val = item.get("d")
+                    distance = None
+                    if d_val is not None:
+                        try:
+                            # Convert to int in case it is parsed as int or float
+                            if isinstance(d_val, (int, float)):
+                                distance = _uint32_to_float(int(d_val))
+                        except Exception as e:
+                            print(f"[mqtt] Error converting d value {d_val}: {e}")
+                    
+                    parsed_devices.append({
+                        "distance": distance,
+                        "temperature": item.get("temperature"),
+                        "pressure": item.get("pressure")
+                    })
+            
+            # Send POST request to host/telemetry/records
+            host = os.getenv("RICEMESH_API_HOST")
+            if host:
+                post_url = f"{host}/telemetry/records"
+                post_body = {"device": parsed_devices}
+                try:
+                    async with _httpx.AsyncClient(timeout=10) as client:
+                        resp = await client.post(post_url, json=post_body)
+                        print(f"[mqtt] Sent telemetry to {post_url}, status={resp.status_code}")
+                except Exception as post_err:
+                    print(f"[mqtt] Error sending telemetry to {post_url}: {post_err}")
 
 
 async def _listen_loop(redis) -> None:

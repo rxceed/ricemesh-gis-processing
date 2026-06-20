@@ -11,6 +11,7 @@ class WebODMAsset(Document):
     project_id: int = Field(..., alias="projectId")
     task_name: str = Field(..., alias="taskName")
     task_id: str = Field(..., alias="taskId")
+    asset_type: str = Field(..., alias="assetType")  # 'orthophoto' or 'dtm'
     file_size_bytes: int = Field(..., alias="fileSizeBytes")
     resolution: List[int] = Field(..., description="[width, height]")  # [width, height]
     
@@ -19,6 +20,7 @@ class WebODMAsset(Document):
         indexes = [
             IndexModel([("gridfsFileId", ASCENDING), ("ownerId", ASCENDING)]),
             IndexModel([("projectId", ASCENDING), ("taskId", ASCENDING)]),
+            IndexModel([("ownerId", ASCENDING), ("projectId", ASCENDING), ("taskId", ASCENDING), ("assetType", ASCENDING)]),
         ]
 
     model_config = {"populate_by_name": True}

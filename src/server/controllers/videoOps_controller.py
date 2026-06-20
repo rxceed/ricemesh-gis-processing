@@ -1,6 +1,7 @@
 # src/server/controllers/videoOps_controller.py
 import asyncio
 import json
+from typing import Optional
 
 from arq.jobs import Job, JobStatus
 from fastapi import File, UploadFile, HTTPException, status, Request
@@ -26,12 +27,18 @@ from server.services.videoOps_service import (
     video_delete_service,
     parsed_image_delete_service,
     get_parsed_images_service,
+    update_video_srt_service,
 )
 
 
 # ── Existing handlers (unchanged logic, redis thread through) ─────────────
 
-async def video_upload(req: Request, ctx: _videoOpsBase, file: UploadFile = File(...)):
+async def video_upload(
+    req: Request,
+    ctx: _videoOpsBase,
+    file: UploadFile = File(...),
+    srt_file: Optional[UploadFile] = File(None),
+):
     try:
         # Fast extension check (case-insensitive for the user)
         if not file.filename.lower().endswith((".mp4",)):
@@ -41,7 +48,7 @@ async def video_upload(req: Request, ctx: _videoOpsBase, file: UploadFile = File
             )
         
         # Service handles magic number validation and extension normalization
-        res = await video_upload_service(ctx, file, redis=req.state.redis)
+        res = await video_upload_service(ctx, file, srt_file=srt_file, redis=req.state.redis)
         return _videoOpsArqWorkerResponse(job_id=res["job_id"],
                                             status=res["status"],
                                             message=res["message"])
@@ -298,4 +305,14 @@ async def stream_webodm_task_progress(
     except asyncio.CancelledError:
         # Client disconnected — stop polling gracefully
         return
+
+
+async def video_update_srt(req: Request, video_id: str, owner_id: str, srt_content: str):
+    try:
+        res = await update_video_srt_service(video_id, owner_id, srt_content)
+        return _videoOpsResponseBase(status=res["status"], message=res["message"])
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 

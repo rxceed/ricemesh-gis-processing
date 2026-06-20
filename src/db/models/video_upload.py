@@ -16,6 +16,7 @@ class VideoUpload(Document):
     fps: Optional[float] = None
     resolution: Optional[video_resolution] = None
     codec: Optional[str] = None
+    srt_content: Optional[str] = Field(None, alias="srtContent")
 
     class Settings:
         name = "video_uploads"

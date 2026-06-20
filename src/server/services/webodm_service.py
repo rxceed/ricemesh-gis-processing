@@ -279,7 +279,8 @@ async def webodm_task_get_dtm_service(
 
             for r in range(0, h, step_y):
                 for c in range(0, w, step_x):
-                    val = data[r, c]
+                    # Correct Y-axis elevation inversion by flipping the row index
+                    val = data[h - 1 - r, c]
                     # Skip nodata, NaN, and Inf values
                     if nodata_val is not None and val == nodata_val:
                         continue

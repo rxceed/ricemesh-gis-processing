@@ -513,60 +513,125 @@ async def process_webodm_video(
 
         elapsed = 0.0
 
-        while elapsed < TIMEOUT_SEC:
-            await asyncio.sleep(POLL_INTERVAL)
-            elapsed += POLL_INTERVAL
+        try:
+            while elapsed < TIMEOUT_SEC:
+                await asyncio.sleep(POLL_INTERVAL)
+                elapsed += POLL_INTERVAL
 
-            # Re-authenticate periodically to prevent token expiry
-            if elapsed % REAUTH_INTERVAL < POLL_INTERVAL:
+                # Re-authenticate periodically to prevent token expiry
+                if elapsed % REAUTH_INTERVAL < POLL_INTERVAL:
+                    try:
+                        token = await webodm_auth_service()
+                    except Exception:
+                        pass  # keep using old token; next poll will surface auth errors
+
                 try:
-                    token = await webodm_auth_service()
-                except Exception:
-                    pass  # keep using old token; next poll will surface auth errors
+                    progress = await webodm_task_progress_service(project_id, webodm_task_id, token)
+                except Exception as exc:
+                    # Transient errors — log and retry on next iteration
+                    await _set_progress(
+                        ctx, "webodm_processing", 91,
+                        f"Progress poll error (retrying): {exc}",
+                        webodm_task_id=webodm_task_id,
+                    )
+                    continue
 
-            try:
-                progress = await webodm_task_progress_service(project_id, webodm_task_id, token)
-            except Exception as exc:
-                # Transient errors — log and retry on next iteration
+                webodm_percent = progress["percent"]
+                webodm_status = progress["status"]
+                webodm_status_code = progress["status_code"]
+
+                # Map WebODM progress (0-100) into our 91-100 range
+                mapped_percent = 91 + int(webodm_percent * 9 / 100)
+
                 await _set_progress(
-                    ctx, "webodm_processing", 91,
-                    f"Progress poll error (retrying): {exc}",
+                    ctx, "webodm_processing", min(mapped_percent, 99),
+                    f"WebODM {webodm_status}: {webodm_percent}%",
                     webodm_task_id=webodm_task_id,
+                    webodm_status=webodm_status,
+                    webodm_percent=webodm_percent,
                 )
-                continue
 
-            webodm_percent = progress["percent"]
-            webodm_status = progress["status"]
-            webodm_status_code = progress["status_code"]
+                # Terminal state reached
+                if webodm_status_code in _TERMINAL:
+                    if webodm_status_code == 30:
+                        raise RuntimeError(
+                            f"WebODM task {webodm_task_id} failed: {progress.get('last_error', 'unknown error')}"
+                        )
+                    if webodm_status_code == 50:
+                        raise RuntimeError(
+                            f"WebODM task {webodm_task_id} was canceled"
+                        )
+                    break
+            else:
+                # while-else: timeout reached without terminal state
+                raise TimeoutError(
+                    f"WebODM task {webodm_task_id} did not complete within {TIMEOUT_SEC}s"
+                )
 
-            # Map WebODM progress (0-100) into our 91-100 range
-            mapped_percent = 91 + int(webodm_percent * 9 / 100)
+            # ── Stage 5: Download assets and save to GridFS & MongoDB ──────────
+            await _set_progress(ctx, "downloading_assets", 99, "Downloading orthophoto and dtm from WebODM…")
+            
+            from db.models import WebODMAsset
+            from server.services.webodm_service import webodm_task_download_service
+            import rasterio
 
-            await _set_progress(
-                ctx, "webodm_processing", min(mapped_percent, 99),
-                f"WebODM {webodm_status}: {webodm_percent}%",
-                webodm_task_id=webodm_task_id,
-                webodm_status=webodm_status,
-                webodm_percent=webodm_percent,
-            )
-
-            # Terminal state reached
-            if webodm_status_code in _TERMINAL:
-                if webodm_status_code == 30:
-                    raise RuntimeError(
-                        f"WebODM task {webodm_task_id} failed: {progress.get('last_error', 'unknown error')}"
+            assets_to_download = ["orthophoto.tif", "dtm.tif"]
+            for asset_type in assets_to_download:
+                try:
+                    res_asset = await webodm_task_download_service(project_name, tracking_task.task_name, asset_type, token)
+                    
+                    # Save asset to local temp file
+                    os.makedirs("tmp/assets", exist_ok=True)
+                    local_asset_path = Path(f"tmp/assets/{webodm_task_id}_{asset_type}")
+                    with open(local_asset_path, "wb") as f:
+                        for chunk in res_asset.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                    
+                    # Read resolution using rasterio
+                    width, height = 0, 0
+                    file_size_bytes = local_asset_path.stat().st_size
+                    try:
+                        with rasterio.open(local_asset_path) as r_src:
+                            width = r_src.width
+                            height = r_src.height
+                    except Exception as r_err:
+                        print(f"Error reading resolution for {asset_type}: {r_err}")
+                    
+                    # Upload to GridFS
+                    gridfs_filename = f"{project_name}_{tracking_task.task_name}_{asset_type}"
+                    gridfs_id = await gridfs_upload_file(
+                        ctx["db"], local_asset_path, gridfs_filename, bucket_name="webodm_assets"
                     )
-                if webodm_status_code == 50:
-                    raise RuntimeError(
-                        f"WebODM task {webodm_task_id} was canceled"
+                    
+                    # Create WebODMAsset record
+                    asset_doc = WebODMAsset(
+                        gridfsFileId=gridfs_id,
+                        ownerId=owner_id,
+                        projectName=project_name,
+                        projectId=project_id,
+                        taskName=tracking_task.task_name,
+                        taskId=str(webodm_task_id),
+                        assetType=asset_type.replace(".tif", ""),  # 'orthophoto' or 'dtm'
+                        fileSizeBytes=file_size_bytes,
+                        resolution=[width, height]
                     )
-                break
+                    await asset_doc.insert()
+                    
+                    # Clean up local file
+                    local_asset_path.unlink(missing_ok=True)
+                except Exception as asset_err:
+                    print(f"Error processing asset {asset_type}: {asset_err}")
 
-        else:
-            # while-else: timeout reached without terminal state
-            raise TimeoutError(
-                f"WebODM task {webodm_task_id} did not complete within {TIMEOUT_SEC}s"
-            )
+            # Update tracking task status
+            tracking_task.status = "completed"
+            tracking_task.is_processed = True
+            await tracking_task.save()
+
+        except Exception as exc:
+            tracking_task.status = "failed"
+            await tracking_task.save()
+            raise exc
 
         await _set_progress(ctx, "complete", 100, f"WebODM task completed: {webodm_task_id}")
 

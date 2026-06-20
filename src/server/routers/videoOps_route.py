@@ -1,7 +1,7 @@
 # src/server/routers/videoOps_route.py
 from fastapi import APIRouter, File, Form, UploadFile, Request, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-from typing import Annotated
+from typing import Annotated, Optional
 
 from server.schemas.videoOps_schema import (
     videoOpsParse as _videoOpsParse, 
@@ -21,6 +21,7 @@ from server.controllers.videoOps_controller import (
     video_delete      as _video_delete,
     parsed_image_delete as _parsed_image_delete,
     get_parsed_images as _get_parsed_images,
+    video_update_srt  as _video_update_srt,
 )
 
 videoOps_router = APIRouter(prefix="/api/video-ops", tags=["Video Operations"])
@@ -31,22 +32,43 @@ async def upload(
     req: Request,
     owner_id: Annotated[str, Form(...)],
     file: UploadFile = File(...),
+    srt_file: Optional[UploadFile] = File(None),
 ):
     """
     Save upload to disk and enqueue GridFS upload task.
     Returns 202 immediately with a job_id to track progress.
     """
     ctx = _videoOpsBase(owner_id=owner_id)
-    return await _video_upload(req=req, ctx=ctx, file=file)
+    return await _video_upload(req=req, ctx=ctx, file=file, srt_file=srt_file)
 
 
 @videoOps_router.post("/parse", status_code=202, response_model=_videoOpsArqWorkerResponse)
-async def parse(req: Request, parse: _videoOpsParse):
+async def parse(
+    req: Request,
+    owner_id: Annotated[str, Form(...)],
+    filename: Annotated[str, Form(...)],
+    frame_interval: Annotated[int, Form()] = 1,
+    start: Annotated[float, Form()] = 0.0,
+    end: Annotated[Optional[float], Form()] = None,
+    srt_file: Optional[UploadFile] = File(None),
+):
     """
     Enqueue frame extraction task.
     Returns 202 immediately with a job_id to track progress.
     """
-    return await _video_parser(req=req, ctx=parse)
+    srt_content = None
+    if srt_file:
+        srt_bytes = await srt_file.read()
+        srt_content = srt_bytes.decode("utf-8", errors="ignore")
+    ctx = _videoOpsParse(
+        owner_id=owner_id,
+        filename=filename,
+        frame_interval=frame_interval,
+        start=start,
+        end=end,
+        srt_content=srt_content,
+    )
+    return await _video_parser(req=req, ctx=ctx)
 
 
 @videoOps_router.post("/webodm", status_code=202, response_model=_videoOpsArqWorkerResponse)
@@ -110,3 +132,16 @@ async def list_parsed_images(
 ):
     """List parsed images, optionally filtered by owner_id and/or filename query params."""
     return await _get_parsed_images(owner_id=owner_id, filename=filename)
+
+
+@videoOps_router.put("/videos/{video_id}/srt", status_code=200, response_model=_videoOpsResponseBase)
+async def update_srt(
+    req: Request,
+    video_id: str,
+    owner_id: Annotated[str, Form(...)],
+    srt_file: UploadFile = File(...),
+):
+    """Edit and replace the .SRT file content in a VideoUpload document."""
+    srt_bytes = await srt_file.read()
+    srt_content = srt_bytes.decode("utf-8", errors="ignore")
+    return await _video_update_srt(req=req, video_id=video_id, owner_id=owner_id, srt_content=srt_content)

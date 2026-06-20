@@ -4,6 +4,7 @@ from fastapi import File, UploadFile
 from dotenv import load_dotenv
 import os
 from bson import ObjectId
+from typing import Optional
 
 from db.models import VideoUpload, ParsedImage
 from db.gridfs_ops import gridfs_delete_file
@@ -47,6 +48,7 @@ async def _validate_mp4_magic(file: UploadFile) -> bool:
 async def video_upload_service(
     data: dict,
     file: UploadFile = File(...),
+    srt_file: Optional[UploadFile] = None,
     redis=None,
 ) -> dict:
     """
@@ -72,6 +74,11 @@ async def video_upload_service(
     tmp_path = UPLOAD_TMP_DIR / normalized_filename
     await _save_upload_to_disk(file, tmp_path)
 
+    srt_content = None
+    if srt_file:
+        srt_bytes = await srt_file.read()
+        srt_content = srt_bytes.decode("utf-8", errors="ignore")
+
     job = await redis.enqueue_job(
         "upload_video",
         owner_id=data.owner_id,
@@ -79,6 +86,7 @@ async def video_upload_service(
         filename=normalized_filename,
         content_type="video/mp4",
         file_size=file.size,
+        srt_content=srt_content,
     )
 
     return {
@@ -94,6 +102,12 @@ async def video_parser_service(data: dict, redis=None) -> dict:
     The worker downloads the video from GridFS, extracts frames, and
     reports progress via Redis.
     """
+    if getattr(data, "srt_content", None) is not None:
+        video_doc = await VideoUpload.find_one({"ownerId": data.owner_id, "filename": data.filename})
+        if video_doc:
+            video_doc.srt_content = data.srt_content
+            await video_doc.save()
+
     job = await redis.enqueue_job(
         "parse_video",
         owner_id=data.owner_id,
@@ -108,6 +122,16 @@ async def video_parser_service(data: dict, redis=None) -> dict:
         "status":  "queued",
         "message": f"Parsing queued for {data.filename}.",
     }
+
+
+async def update_video_srt_service(video_id: str, owner_id: str, srt_content: str) -> dict:
+    video = await VideoUpload.find_one({"_id": ObjectId(video_id), "ownerId": owner_id})
+    if not video:
+        raise ValueError("Video not found or unauthorized")
+    
+    video.srt_content = srt_content
+    await video.save()
+    return {"status": "OK", "message": "SRT file updated successfully"}
 
 
 async def get_video_service(data: dict) -> dict:

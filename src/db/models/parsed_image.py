@@ -12,6 +12,7 @@ class ParsedImage(Document):
     owner_id: str = Field(..., alias="ownerId")
     filename: str
     image_frames: List[frames] = Field(..., alias="imageFrames")
+    geo_txt: Optional[str] = Field(None, alias="geoTxt")
 
     class Settings:
         name = "parsed_images"

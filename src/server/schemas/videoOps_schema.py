@@ -11,6 +11,7 @@ class videoOpsParse(videoOpsBase):
     frame_interval: int = 1
     start: float = 0
     end: float | None = None
+    srt_content: Optional[str] = None
 
 class videoOpsWebodmTask(videoOpsBase):
     filename: str
@@ -40,6 +41,7 @@ class parsedImageResponse(BaseModel):
     owner_id: str = Field(..., alias="ownerId")
     filename: str
     image_frames: List[framesResponse] = Field(..., alias="imageFrames")
+    geo_txt: Optional[str] = Field(None, alias="geoTxt")
 
     model_config = {"populate_by_name": True, "from_attributes": True}
 

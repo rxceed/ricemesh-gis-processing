@@ -72,3 +72,110 @@ def read_video_metadata(file_path: Path) -> dict:
             "height": int(video_track.height or 0),
         },
     }
+
+def _parse_time_to_seconds(time_str: str) -> float:
+    """Converts timestamp format (HH:MM:SS,mmm or HH:MM:SS.mmm) to total seconds."""
+    time_str = time_str.replace(',', '.')
+    parts = time_str.split(':')
+    if len(parts) == 3:
+        h, m, s = parts
+        return float(h) * 3600 + float(m) * 60 + float(s)
+    elif len(parts) == 2:
+        m, s = parts
+        return float(m) * 60 + float(s)
+    else:
+        return float(parts[0])
+
+def _extract_gps_from_text(text: str) -> tuple[float | None, float | None, float]:
+    """Extracts longitude, latitude, and altitude from SRT subtitle line."""
+    lat_match = re.search(r'(?:lat(?:itude)?)\s*[:=]\s*([+-]?\d+\.?\d*)', text, re.IGNORECASE)
+    lon_match = re.search(r'(?:lon(?:gitude|gtitude)?|lng)\s*[:=]\s*([+-]?\d+\.?\d*)', text, re.IGNORECASE)
+    alt_match = re.search(r'(?:alt(?:itude)?|ele(?:vation)?|height)\s*[:=]\s*([+-]?\d+\.?\d*)', text, re.IGNORECASE)
+    
+    lat = None
+    lon = None
+    alt = 0.0
+    
+    if lat_match:
+        lat = float(lat_match.group(1))
+    if lon_match:
+        lon = float(lon_match.group(1))
+    if alt_match:
+        alt = float(alt_match.group(1))
+        
+    if lat is None or lon is None:
+        numbers = re.findall(r'[+-]?\d+\.?\d*', text)
+        if len(numbers) >= 2:
+            try:
+                lat = float(numbers[0])
+                lon = float(numbers[1])
+                if len(numbers) >= 3:
+                    alt = float(numbers[2])
+            except ValueError:
+                pass
+                
+    return lon, lat, alt
+
+def parse_srt_gps(srt_content: str) -> list[dict]:
+    """Parses SRT file content to extract list of timed GPS coordinate entries."""
+    blocks = re.split(r'\n\s*\n', srt_content.strip())
+    entries = []
+    
+    for block in blocks:
+        lines = [line.strip() for line in block.split('\n') if line.strip()]
+        if len(lines) < 2:
+            continue
+        
+        timestamp_line = ""
+        text_lines = []
+        
+        if '-->' in lines[1]:
+            timestamp_line = lines[1]
+            text_lines = lines[2:]
+        elif '-->' in lines[0]:
+            timestamp_line = lines[0]
+            text_lines = lines[1:]
+        else:
+            for line in lines:
+                if '-->' in line:
+                    timestamp_line = line
+                    break
+            text_lines = [l for l in lines if l != timestamp_line and not l.isdigit()]
+            
+        if not timestamp_line:
+            continue
+            
+        time_parts = timestamp_line.split('-->')
+        if len(time_parts) != 2:
+            continue
+            
+        try:
+            start_sec = _parse_time_to_seconds(time_parts[0].strip())
+            end_sec = _parse_time_to_seconds(time_parts[1].strip())
+        except ValueError:
+            continue
+            
+        text_content = " ".join(text_lines)
+        lon, lat, alt = _extract_gps_from_text(text_content)
+        
+        if lat is not None and lon is not None:
+            entries.append({
+                "start": start_sec,
+                "end": end_sec,
+                "lon": lon,
+                "lat": lat,
+                "alt": alt
+            })
+            
+    return entries
+
+def find_gps_for_timestamp(entries: list[dict], t: float) -> tuple[float, float, float] | None:
+    """Finds matching or closest GPS entry for a given time offset in seconds."""
+    if not entries:
+        return None
+    for entry in entries:
+        if entry["start"] <= t <= entry["end"]:
+            return entry["lon"], entry["lat"], entry["alt"]
+            
+    closest_entry = min(entries, key=lambda e: min(abs(t - e["start"]), abs(t - e["end"])))
+    return closest_entry["lon"], closest_entry["lat"], closest_entry["alt"]
