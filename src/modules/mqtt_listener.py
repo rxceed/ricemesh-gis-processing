@@ -149,7 +149,17 @@ async def _on_message(message: aiomqtt.Message, redis) -> None:
             host = os.getenv("RICEMESH_API_HOST")
             if host:
                 post_url = f"{host}/telemetry/records"
-                post_body = {"device": parsed_devices}
+                
+                # Extract device_code from the topic: device/{device_code}/{serial_number}
+                device_code = None
+                topic_parts = topic.split("/")
+                if len(topic_parts) >= 2 and topic_parts[0] == "device":
+                    device_code = topic_parts[1]
+                
+                post_body = {
+                    "device": parsed_devices,
+                    "device_code": device_code
+                }
                 try:
                     async with _httpx.AsyncClient(timeout=10) as client:
                         resp = await client.post(post_url, json=post_body)
