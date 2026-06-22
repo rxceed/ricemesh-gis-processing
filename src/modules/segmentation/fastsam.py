@@ -85,128 +85,129 @@ def _segment_tif_with_fastsam(
     vector_path = output_dir / f"{output_stem}_fastsam_segments.geojson"
     tmp_png     = output_dir / "_fastsam_tile_tmp.png"
 
-    with rasterio.open(reference_tif) as ref:
-        H, W      = ref.height, ref.width
-        profile   = ref.profile.copy()
-        transform = ref.transform
-        px_m      = abs(transform.a)       # metres per pixel (square pixels assumed)
-        min_px    = max(1, int(min_area_m2  / (px_m ** 2)))
-        max_px    = int(max_area_m2 / (px_m ** 2)) if max_area_m2 else None
+    try:
+        with rasterio.open(reference_tif) as ref:
+            H, W      = ref.height, ref.width
+            profile   = ref.profile.copy()
+            transform = ref.transform
+            px_m      = abs(transform.a)       # metres per pixel (square pixels assumed)
+            min_px    = max(1, int(min_area_m2  / (px_m ** 2)))
+            max_px    = int(max_area_m2 / (px_m ** 2)) if max_area_m2 else None
 
-    out_mask    = np.zeros((H, W), dtype=np.uint32)
-    global_id   = 0
-    stride      = tile_size - overlap
-    core_margin = overlap // 2
+        out_mask    = np.zeros((H, W), dtype=np.uint32)
+        global_id   = 0
+        stride      = tile_size - overlap
+        core_margin = overlap // 2
 
-    col_starts  = list(range(0, W, stride))
-    row_starts  = list(range(0, H, stride))
-    total       = len(col_starts) * len(row_starts)
-    done        = 0
+        col_starts  = list(range(0, W, stride))
+        row_starts  = list(range(0, H, stride))
+        total       = len(col_starts) * len(row_starts)
+        done        = 0
 
-    with rasterio.open(source_tif) as src:
-        for row_off in row_starts:
-            for col_off in col_starts:
-                done += 1
+        with rasterio.open(source_tif) as src:
+            for row_off in row_starts:
+                for col_off in col_starts:
+                    done += 1
 
-                # Clamp to image bounds; shift start back for edge tiles so
-                # every tile is exactly tile_size × tile_size.
-                col_end   = min(col_off + tile_size, W)
-                row_end   = min(row_off + tile_size, H)
-                col_start = max(0, col_end - tile_size)
-                row_start = max(0, row_end - tile_size)
-                actual_w  = col_end - col_start
-                actual_h  = row_end - row_start
+                    # Clamp to image bounds; shift start back for edge tiles so
+                    # every tile is exactly tile_size × tile_size.
+                    col_end   = min(col_off + tile_size, W)
+                    row_end   = min(row_off + tile_size, H)
+                    col_start = max(0, col_end - tile_size)
+                    row_start = max(0, row_end - tile_size)
+                    actual_w  = col_end - col_start
+                    actual_h  = row_end - row_start
 
-                print(
-                    f"  [{done}/{total}]  "
-                    f"col={col_start}–{col_end}  row={row_start}–{row_end}"
-                )
-
-                win   = Window(col_start, row_start, actual_w, actual_h)
-                bands = np.stack(
-                    [src.read(i + 1, window=win) for i in range(min(3, src.count))],
-                    axis=-1,
-                )  # (H, W, 3) uint8
-
-                # Skip predominantly-nodata tiles (stitching border)
-                is_white = np.all(bands > 250, axis=-1)
-                if is_white.mean() > 0.60:
-                    print(f"    → skipped ({100 * is_white.mean():.0f}% nodata border)")
-                    continue
-
-                # FastSAM expects a file path, not an in-memory array
-                cv2.imwrite(
-                    str(tmp_png),
-                    cv2.cvtColor(bands, cv2.COLOR_RGB2BGR),
-                )
-
-                # ── Inference ─────────────────────────────────────────────
-                try:
-                    results = model.predict(
-                        source=str(tmp_png),
-                        device=device,
-                        conf=conf,
-                        #iou=iou,
-                        retina_masks=True,   # full-resolution masks — essential
-                        #imgsz=tile_size,     # inference resolution
-                        #verbose=True,
-                    )
-                except Exception as exc:
-                    print(f"    → FastSAM failed: {exc}")
-                    continue
-                
-                if results is None:
-                    continue
-                if results[0].masks is None:
-                    print("    → no masks returned")
-                    continue
-                for r in results:
-                    r.save(filename=output_dir / f"tile/_fastsam_debug{done}.jpg")
-
-                # masks tensor: (N, H, W) float — threshold sigmoid output
-                raw_masks = results[0].masks.data.cpu().numpy()
-                masks     = raw_masks > 0.5
-
-                # ── Area filter + stitch into output raster ────────────────
-                core_r0 = core_margin if row_start > 0 else 0
-                core_r1 = actual_h - core_margin if row_end < H else actual_h
-                core_c0 = core_margin if col_start > 0 else 0
-                core_c1 = actual_w - core_margin if col_end < W else actual_w
-
-                for mask_bool in masks:
-                    # Resize to tile dims if FastSAM returned a different shape
-                    # (can happen when imgsz != actual tile size)
-                    if mask_bool.shape != (actual_h, actual_w):
-                        mask_bool = cv2.resize(
-                            mask_bool.astype(np.uint8),
-                            (actual_w, actual_h),
-                            interpolation=cv2.INTER_NEAREST,
-                        ).astype(bool)
-
-                    px_count = int(mask_bool.sum())
-                    if px_count < min_px:
-                        continue
-                    if max_px is not None and px_count > max_px:
-                        continue
-
-                    global_id += 1
-
-                    core_tile = mask_bool[core_r0:core_r1, core_c0:core_c1]
-                    core_out  = np.zeros_like(core_tile, dtype=np.uint32)
-                    core_out[core_tile] = global_id
-
-                    dst_r0 = row_start + core_r0
-                    dst_r1 = row_start + core_r1
-                    dst_c0 = col_start + core_c0
-                    dst_c1 = col_start + core_c1
-
-                    existing = out_mask[dst_r0:dst_r1, dst_c0:dst_c1]
-                    out_mask[dst_r0:dst_r1, dst_c0:dst_c1] = np.where(
-                        core_out > 0, core_out, existing
+                    print(
+                        f"  [{done}/{total}]  "
+                        f"col={col_start}–{col_end}  row={row_start}–{row_end}"
                     )
 
-    if tmp_png.exists():
-        tmp_png.unlink()
+                    win   = Window(col_start, row_start, actual_w, actual_h)
+                    bands = np.stack(
+                        [src.read(i + 1, window=win) for i in range(min(3, src.count))],
+                        axis=-1,
+                    )  # (H, W, 3) uint8
+
+                    # Skip predominantly-nodata tiles (stitching border)
+                    is_white = np.all(bands > 250, axis=-1)
+                    if is_white.mean() > 0.60:
+                        print(f"    → skipped ({100 * is_white.mean():.0f}% nodata border)")
+                        continue
+
+                    # FastSAM expects a file path, not an in-memory array
+                    cv2.imwrite(
+                        str(tmp_png),
+                        cv2.cvtColor(bands, cv2.COLOR_RGB2BGR),
+                    )
+
+                    # ── Inference ─────────────────────────────────────────────
+                    try:
+                        results = model.predict(
+                            source=str(tmp_png),
+                            device=device,
+                            conf=conf,
+                            #iou=iou,
+                            retina_masks=True,   # full-resolution masks — essential
+                            #imgsz=tile_size,     # inference resolution
+                            #verbose=True,
+                        )
+                    except Exception as exc:
+                        print(f"    → FastSAM failed: {exc}")
+                        continue
+                    
+                    if results is None:
+                        continue
+                    if results[0].masks is None:
+                        print("    → no masks returned")
+                        continue
+                    for r in results:
+                        r.save(filename=output_dir / f"tile/_fastsam_debug{done}.jpg")
+
+                    # masks tensor: (N, H, W) float — threshold sigmoid output
+                    raw_masks = results[0].masks.data.cpu().numpy()
+                    masks     = raw_masks > 0.5
+
+                    # ── Area filter + stitch into output raster ────────────────
+                    core_r0 = core_margin if row_start > 0 else 0
+                    core_r1 = actual_h - core_margin if row_end < H else actual_h
+                    core_c0 = core_margin if col_start > 0 else 0
+                    core_c1 = actual_w - core_margin if col_end < W else actual_w
+
+                    for mask_bool in masks:
+                        # Resize to tile dims if FastSAM returned a different shape
+                        # (can happen when imgsz != actual tile size)
+                        if mask_bool.shape != (actual_h, actual_w):
+                            mask_bool = cv2.resize(
+                                mask_bool.astype(np.uint8),
+                                (actual_w, actual_h),
+                                interpolation=cv2.INTER_NEAREST,
+                            ).astype(bool)
+
+                        px_count = int(mask_bool.sum())
+                        if px_count < min_px:
+                            continue
+                        if max_px is not None and px_count > max_px:
+                            continue
+
+                        global_id += 1
+
+                        core_tile = mask_bool[core_r0:core_r1, core_c0:core_c1]
+                        core_out  = np.zeros_like(core_tile, dtype=np.uint32)
+                        core_out[core_tile] = global_id
+
+                        dst_r0 = row_start + core_r0
+                        dst_r1 = row_start + core_r1
+                        dst_c0 = col_start + core_c0
+                        dst_c1 = col_start + core_c1
+
+                        existing = out_mask[dst_r0:dst_r1, dst_c0:dst_c1]
+                        out_mask[dst_r0:dst_r1, dst_c0:dst_c1] = np.where(
+                            core_out > 0, core_out, existing
+                        )
+    finally:
+        if tmp_png.exists():
+            tmp_png.unlink()
 
     print(f"\nTotal segments (pre-filter): {global_id}")
 

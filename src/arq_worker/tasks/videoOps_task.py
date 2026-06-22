@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 
 from db.gridfs_ops import gridfs_download_file, gridfs_upload_file
 from db.models import VideoUpload, ParsedImage, WebODMTask, JobLog
-from utils import read_video_metadata
+from utils import read_video_metadata, parse_srt_gps, find_gps_for_timestamp
 from modules.parsevid import video_to_frames
 from server.services.webodm_service import (
     webodm_auth_service,
@@ -93,6 +93,7 @@ async def upload_video(
     filename: str,
     content_type: str,
     file_size: int,
+    srt_content: str | None = None,
 ) -> dict:
     """
     Upload a video from a local temp file to GridFS, extract metadata,
@@ -145,6 +146,7 @@ async def upload_video(
             fps=metadata["fps"],
             resolution=metadata["resolution"],
             codec=metadata["codec"],
+            srtContent=srt_content,
         )
         await doc.insert()
 
@@ -309,6 +311,29 @@ async def parse_video(
         if frame_batch:
             await _process_frame_batch(ctx, owner_id, filename, frame_batch)
 
+        # Parse GPS coordinates from SRT if available and generate geo.txt format
+        if video_doc.srt_content:
+            try:
+                srt_entries = parse_srt_gps(video_doc.srt_content)
+                if srt_entries:
+                    fps = video_doc.fps or 30.0
+                    geo_lines = ["EPSG:4326"]
+                    for i in range(1, extracted_frames + 1):
+                        # Calculate elapsed time in seconds for the i-th frame
+                        t = start_sec + (i - 1) * frame_interval / fps
+                        coords = find_gps_for_timestamp(srt_entries, t)
+                        if coords:
+                            lon, lat, alt = coords
+                            geo_lines.append(f"frame_{i:04d}.png {lon} {lat} {alt}")
+                    
+                    if len(geo_lines) > 1:
+                        geo_txt_content = "\n".join(geo_lines)
+                        await ParsedImage.find_one(
+                            {"ownerId": owner_id, "filename": filename}
+                        ).update({"$set": {"geoTxt": geo_txt_content}})
+            except Exception as srt_err:
+                print(f"Error generating geo.txt from SRT content: {srt_err}")
+
         await _set_progress(
             ctx, "complete", 100,
             f"Extracted {extracted_frames} frames",
@@ -326,6 +351,10 @@ async def parse_video(
         }
 
     finally:
+        if "dest" in locals() and dest.exists():
+            dest.unlink(missing_ok=True)
+        if "output_dir" in locals() and output_dir.exists():
+            shutil.rmtree(output_dir, ignore_errors=True)
         await _delete_job_log(ctx["job_id"])
 
 
@@ -477,6 +506,10 @@ async def process_webodm_video(
                 content = f.read()
                 file_tuples.append((img_path.name, content, "image/png"))
 
+        # Include geo.txt if available in parsedImages document
+        if getattr(parsed_image, "geo_txt", None):
+            file_tuples.append(("geo.txt", parsed_image.geo_txt.encode("utf-8"), "text/plain"))
+
         await _set_progress(ctx, "webodm_creating", 90, "Finalizing WebODM task…")
 
         task_data = {}
@@ -577,12 +610,12 @@ async def process_webodm_video(
 
             assets_to_download = ["orthophoto.tif", "dtm.tif"]
             for asset_type in assets_to_download:
+                local_asset_path = Path(f"tmp/assets/{webodm_task_id}_{asset_type}")
                 try:
                     res_asset = await webodm_task_download_service(project_name, tracking_task.task_name, asset_type, token)
                     
                     # Save asset to local temp file
                     os.makedirs("tmp/assets", exist_ok=True)
-                    local_asset_path = Path(f"tmp/assets/{webodm_task_id}_{asset_type}")
                     with open(local_asset_path, "wb") as f:
                         for chunk in res_asset.iter_content(chunk_size=1024 * 1024):
                             if chunk:
@@ -617,11 +650,11 @@ async def process_webodm_video(
                         resolution=[width, height]
                     )
                     await asset_doc.insert()
-                    
-                    # Clean up local file
-                    local_asset_path.unlink(missing_ok=True)
                 except Exception as asset_err:
                     print(f"Error processing asset {asset_type}: {asset_err}")
+                finally:
+                    if local_asset_path.exists():
+                        local_asset_path.unlink(missing_ok=True)
 
             # Update tracking task status
             tracking_task.status = "completed"
@@ -643,7 +676,8 @@ async def process_webodm_video(
             "available_assets": progress.get("available_assets", []),
         }
 
-
     finally:
+        if "download_dir" in locals() and download_dir.exists():
+            shutil.rmtree(download_dir, ignore_errors=True)
         await _delete_job_log(ctx["job_id"])
 

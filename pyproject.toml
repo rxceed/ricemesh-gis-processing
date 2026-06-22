@@ -5,10 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aioboto3>=15.5.0",
     "aiomqtt>=2.3.0",
     "argparse>=1.4.0",
     "arq>=0.28.0",
     "beanie>=2.1.0",
+    "boto3>=1.40.61",
     "fastapi>=0.136.1",
     "httpx>=0.28.1",
     "imageio>=2.37.3",
