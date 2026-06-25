@@ -28,6 +28,8 @@ WEBODM_DEFAULT_OPTIONS = [
     {"name": "orthophoto-resolution", "value": 0.5},
     {"name": "orthophoto-cutline", "value": True},
     {"name": "tiles", "value": True},
+    {"name": "pc-quality", "value": "lowest"},
+    {"name": "skip-3dmodel", "value": True}
 ]
 
 async def webodm_auth_service():
@@ -162,9 +164,22 @@ async def webodm_task_download_service(project_name: str, task_name: str, asset_
     # 2. Find task
     task_list = await webodm_task_get_service(project_id, token, name=task_name)
     # WebODM /api/projects/{id}/tasks/?name=... returns a list directly
-    task = next((t for t in task_list if t.get("name") == task_name), None)
-    if not task:
+    matching_tasks = [t for t in task_list if t.get("name") == task_name]
+    if not matching_tasks:
         raise ValueError(f"Task '{task_name}' not found in project '{project_name}'")
+    
+    # Sort matching tasks to retrieve the latest/newest first
+    def _task_sort_key(t):
+        created_at = t.get("created_at") or ""
+        task_id = t.get("id")
+        try:
+            task_id_int = int(task_id) if task_id is not None else -1
+        except (ValueError, TypeError):
+            task_id_int = -1
+        return (created_at, task_id_int)
+    
+    matching_tasks.sort(key=_task_sort_key, reverse=True)
+    task = matching_tasks[0]
     
     task_id = task["id"]
     
