@@ -8,7 +8,7 @@ from server.controllers.processed_map_controller import (
     processed_map_display as _processed_map_display,
 )
 
-processed_map_router = APIRouter(prefix="/processed-map", tags=["Processed Map"])
+processed_map_router = APIRouter(prefix="/api/processed-map", tags=["Processed Map"])
 
 @processed_map_router.get("/download")
 async def download_asset(
