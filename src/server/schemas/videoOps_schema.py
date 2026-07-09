@@ -48,3 +48,7 @@ class parsedImageResponse(BaseModel):
 
 class parsedImageListResponse(videoOpsResponseBase):
     images: List[parsedImageResponse]
+
+
+class parsedImageUploadResponse(videoOpsResponseBase):
+    image: parsedImageResponse

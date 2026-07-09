@@ -18,7 +18,8 @@ from server.schemas.videoOps_schema import (
     videoOpsResponseBase as _videoOpsResponseBase, 
     videoOpsArqWorkerResponse as _videoOpsArqWorkerResponse,
     videoOpsGetVidResponse as _videoOpsGetVidResponse,
-    parsedImageListResponse as _parsedImageListResponse)
+    parsedImageListResponse as _parsedImageListResponse,
+    parsedImageUploadResponse as _parsedImageUploadResponse)
 from server.services.videoOps_service import (
     get_video_service,
     video_parser_service,
@@ -28,6 +29,7 @@ from server.services.videoOps_service import (
     parsed_image_delete_service,
     get_parsed_images_service,
     update_video_srt_service,
+    upload_parsed_images_service,
 )
 
 
@@ -315,4 +317,32 @@ async def video_update_srt(req: Request, video_id: str, owner_id: str, srt_conte
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def upload_parsed_images(
+    req: Request,
+    owner_id: str,
+    filename: str,
+    files: list[UploadFile],
+):
+    try:
+        res = await upload_parsed_images_service(
+            owner_id=owner_id,
+            filename=filename,
+            files=files,
+            db=req.app.state.db,
+        )
+        return _parsedImageUploadResponse(
+            status=res["status"],
+            message=res["message"],
+            image=res["image"],
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 

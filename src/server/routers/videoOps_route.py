@@ -1,7 +1,7 @@
 # src/server/routers/videoOps_route.py
 from fastapi import APIRouter, File, Form, UploadFile, Request, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-from typing import Annotated, Optional
+from typing import Annotated, Optional, List
 
 from server.schemas.videoOps_schema import (
     videoOpsParse as _videoOpsParse, 
@@ -10,7 +10,8 @@ from server.schemas.videoOps_schema import (
     videoOpsResponseBase as _videoOpsResponseBase, 
     videoOpsArqWorkerResponse as _videoOpsArqWorkerResponse,
     videoOpsGetVidResponse as _videoOpsGetVidResponse,
-    parsedImageListResponse as _parsedImageListResponse)
+    parsedImageListResponse as _parsedImageListResponse,
+    parsedImageUploadResponse as _parsedImageUploadResponse)
 from server.controllers.videoOps_controller import (
     video_upload      as _video_upload,
     video_parser      as _video_parser,
@@ -22,6 +23,7 @@ from server.controllers.videoOps_controller import (
     parsed_image_delete as _parsed_image_delete,
     get_parsed_images as _get_parsed_images,
     video_update_srt  as _video_update_srt,
+    upload_parsed_images as _upload_parsed_images,
 )
 
 videoOps_router = APIRouter(prefix="/api/video-ops", tags=["Video Operations"])
@@ -145,3 +147,22 @@ async def update_srt(
     srt_bytes = await srt_file.read()
     srt_content = srt_bytes.decode("utf-8", errors="ignore")
     return await _video_update_srt(req=req, video_id=video_id, owner_id=owner_id, srt_content=srt_content)
+
+
+@videoOps_router.post("/parsed/upload", status_code=201, response_model=_parsedImageUploadResponse)
+async def upload_parsed_images(
+    req: Request,
+    owner_id: Annotated[str, Form(...)],
+    filename: Annotated[str, Form(...)],
+    files: List[UploadFile] = File(...),
+):
+    """
+    Directly upload multiple parsed image files, saving them to GridFS and
+    linking them in a ParsedImage document.
+    """
+    return await _upload_parsed_images(
+        req=req,
+        owner_id=owner_id,
+        filename=filename,
+        files=files,
+    )

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator
 from typing import Optional, Annotated, Any
 
 
@@ -7,6 +7,19 @@ class node_point_model(BaseModel):
     water_height: float = Field(..., ge=0, description="Current water height in m")
     optimal_height: float = Field(..., ge=0, description="Optimal water height in m")
     elevation: float = Field(..., description="Elevation of the plot in m")
+
+    @field_validator("water_height", mode="before")
+    @classmethod
+    def _cap_water_height(cls, v: Any) -> Any:
+        if isinstance(v, (int, float)) and v < 0:
+            return 0.0
+        try:
+            val = float(v)
+            if val < 0.0:
+                return 0.0
+        except (ValueError, TypeError):
+            pass
+        return v
 
 class node_edge_model(BaseModel):
     u: int = Field(..., ge=0, description="Source node index (0-indexed)")

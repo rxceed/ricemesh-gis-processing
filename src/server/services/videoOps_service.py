@@ -6,8 +6,8 @@ import os
 from bson import ObjectId
 from typing import Optional
 
-from db.models import VideoUpload, ParsedImage
-from db.gridfs_ops import gridfs_delete_file
+from db.models import VideoUpload, ParsedImage, frames
+from db.gridfs_ops import gridfs_delete_file, gridfs_upload_file
 
 load_dotenv()
 
@@ -199,3 +199,85 @@ async def get_parsed_images_service(
         images = await ParsedImage.find_all().to_list()
 
     return {"status": "OK", "images": images}
+
+
+async def upload_parsed_images_service(
+    owner_id: str,
+    filename: str,
+    files: list[UploadFile],
+    db,
+) -> dict:
+    """
+    Directly upload multiple parsed image files to GridFS and store/overwrite
+    the ParsedImage document in MongoDB.
+    """
+    # ── Clean up existing ParsedImage document and its GridFS files ───────
+    existing = await ParsedImage.find_one({"ownerId": owner_id, "filename": filename})
+    if existing:
+        for frame in existing.image_frames:
+            try:
+                await gridfs_delete_file(db, frame.gridfs_file_id, bucket_name="parsed_frames")
+            except Exception as e:
+                # Log and continue deletion of other frames
+                print(f"Error deleting GridFS file {frame.gridfs_file_id} during cleanup: {e}")
+        await existing.delete()
+
+    # ── Upload new frames ─────────────────────────────────────────────────
+    uploaded_gridfs_ids = []
+    temp_files_to_clean = []
+    try:
+        PARSED_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        image_frames = []
+        
+        for idx, file in enumerate(files, start=1):
+            ext = Path(file.filename).suffix
+            # Use unique name for disk write to avoid collisions
+            import uuid
+            temp_filename = f"{uuid.uuid4()}_{idx:04d}{ext}"
+            temp_path = PARSED_TMP_DIR / temp_filename
+            temp_files_to_clean.append(temp_path)
+            
+            await _save_upload_to_disk(file, temp_path)
+            
+            # Upload to GridFS
+            gridfs_name = f"{filename}_frame_{idx:04d}{ext}"
+            gridfs_id = await gridfs_upload_file(db, temp_path, gridfs_name, bucket_name="parsed_frames")
+            uploaded_gridfs_ids.append(gridfs_id)
+            
+            # Remove disk temp file immediately
+            if temp_path.exists():
+                temp_path.unlink()
+                temp_files_to_clean.remove(temp_path)
+                
+            image_frames.append(frames(gridfsFileId=gridfs_id, frameIndex=idx))
+            
+    except Exception as e:
+        # Cleanup GridFS uploads on failure
+        for gridfs_id in uploaded_gridfs_ids:
+            try:
+                await gridfs_delete_file(db, gridfs_id, bucket_name="parsed_frames")
+            except Exception:
+                pass
+        # Cleanup any leftover disk temp files
+        for temp_path in temp_files_to_clean:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
+        raise e
+
+    # ── Create and insert ParsedImage document ────────────────────────────
+    parsed_image = ParsedImage(
+        ownerId=owner_id,
+        filename=filename,
+        imageFrames=image_frames,
+    )
+    await parsed_image.insert()
+
+    return {
+        "status": "OK",
+        "message": f"Successfully uploaded {len(files)} parsed images for {filename}",
+        "image": parsed_image,
+    }
+

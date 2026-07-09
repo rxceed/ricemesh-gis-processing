@@ -168,7 +168,7 @@ async def _on_message(message: aiomqtt.Message, redis) -> None:
                 if isinstance(item, dict):
                     distance = item.get("d")
                     parsed_devices.append({
-                        "distance": 80 - distance if distance is not None else None,
+                        "distance": 100 - distance if distance is not None else None,
                         "temperature": item.get("temperature"),
                         "pressure": item.get("pressure")
                     })

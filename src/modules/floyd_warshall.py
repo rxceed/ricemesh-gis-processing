@@ -25,7 +25,8 @@ def calculate_weight(source: dict, dest: dict, distance):
     # Directional water cost: under-watered → low cost (prioritised for irrigation)
     #                         over-watered  → high cost (deprioritised)
     def _water_cost(node: dict) -> float:
-        deficit = node["optimal_height"] - node["water_height"]
+        water_height = max(0.0, node["water_height"])
+        deficit = node["optimal_height"] - water_height
         scaled  = node["area"] * deficit  # m³ deficit (negative when over-watered)
         if scaled >= 0:
             # Under-watered or at optimal: reward proportional to deficit size
